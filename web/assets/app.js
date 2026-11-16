@@ -154,7 +154,7 @@
   const decTag = d => d === "retained" ? '<span class="tag red">Retained</span>' : d === "dismissed" ? '<span class="tag gray">Dismissed</span>'
     : d === "investigate" ? '<span class="tag orange">To investigate</span>' : '<span class="tag blue">Open</span>';
 
-  function semiGauge(value, color1 = "#0075ff", color2 = "#21d4fd") {
+  function semiGauge(value, color1 = "#0075ff", color2 = "#3d8bff") {
     const r = 80, c = Math.PI * r, v = Math.max(0, Math.min(1, value));
     return `<svg width="220" height="130" viewBox="0 0 220 130"><defs><linearGradient id="gg" x1="0" x2="1"><stop offset="0" stop-color="${color1}"/><stop offset="1" stop-color="${color2}"/></linearGradient></defs>
       <path d="M30 115 A80 80 0 0 1 190 115" fill="none" stroke="#22234b" stroke-width="12" stroke-linecap="round"/>
@@ -162,7 +162,7 @@
   }
   function ringGauge(value, size = 170) {
     const r = size / 2 - 12, c = 2 * Math.PI * r, v = Math.max(0, Math.min(1, value)), arc = 0.75;
-    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="transform:rotate(135deg)"><defs><linearGradient id="rg" x1="0" x2="1"><stop offset="0" stop-color="#05cd99"/><stop offset="1" stop-color="#21d4fd"/></linearGradient></defs>
+    return `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" style="transform:rotate(135deg)"><defs><linearGradient id="rg" x1="0" x2="1"><stop offset="0" stop-color="#05a57e"/><stop offset="1" stop-color="#05a57e"/></linearGradient></defs>
       <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="#22234b" stroke-width="11" stroke-linecap="round" stroke-dasharray="${c * arc} ${c}"/>
       <circle cx="${size / 2}" cy="${size / 2}" r="${r}" fill="none" stroke="url(#rg)" stroke-width="11" stroke-linecap="round" stroke-dasharray="${c * arc * v} ${c}"/></svg>`;
   }
@@ -186,8 +186,7 @@
       </div>
       <div class="grid g-hero">
         <div class="card hero">
-          <div class="hero-art"><div class="grid-lines"></div><div class="orb o1"></div><div class="orb o2"></div><div class="ring"></div></div>
-          <div><div class="hi">Welcome back, auditor</div><h2>Testing 100% of journal entries</h2>
+          <div><div class="hi">Engagement overview</div><h2>Testing 100% of journal entries</h2>
             <p>Every entry of the ledger was scored by rules, an outlier model and a predictive model. A local AI wrote the memos. You decide.</p></div>
           <div><div class="big">${nf(k.entries)}</div><div class="muted small">entries scored · ${nf(k.manual)} manual · ${D.dataset.datacard.period}</div>
             <button class="link" style="margin-top:14px" onclick="location.hash='alerts'">Start triage ${ICON.arrow}</button></div>
