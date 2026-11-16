@@ -2,35 +2,41 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>JE Audit · Testing 100% of journal entries</title>
   <meta name="description" content="AI-assisted audit of 100% of journal entries: rules, Isolation Forest, XGBoost + SHAP and a local LLM for audit memos.">
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='9' fill='%230075ff'/><path d='M9 17l5 5 9-11' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='10' fill='%232F7BFF'/><path d='M9 17l5 5 9-11' stroke='white' stroke-width='3.2' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <script>
+    // theme before first paint: saved choice, else dark (the app's default)
+    try { document.documentElement.dataset.theme = localStorage.getItem("je-audit-theme") || "dark"; } catch (e) { document.documentElement.dataset.theme = "dark"; }
+  </script>
+  <link rel="preload" href="assets/fonts/Geist-Variable-1.5.1.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="assets/style.css">
 </head>
 <body>
-<div class="app">
-  <aside class="sidebar">
-    <div class="brand"><span class="brand-logo" data-icon="check"></span>JE · AUDIT</div>
-    <div class="brand-sep"></div>
-    <nav id="nav"></nav>
-    <div class="help-card">
-      <div class="q">?</div>
-      <h4>How does it work?</h4>
-      <p>Rules + ML score every entry, a local AI writes the memo, you decide.</p>
-      <a class="btn-glass" href="#method">METHOD &amp; DATA</a>
+<div class="app" id="app">
+  <aside class="side" id="side">
+    <div class="side-top"><div class="logo"><span class="mk" data-icon="check"></span><span>JE Audit</span></div></div>
+    <nav class="nav" id="nav"></nav>
+    <div class="side-foot">
+      <div class="biz"><span class="av">T9</span><div><div class="nm">Team 9 · AI &amp; Finance</div><div class="st"><span class="dot" id="aiDot2"></span><span id="aiText2">Checking local AI…</span></div></div></div>
+      <a class="side-link" href="#method"><span data-icon="book"></span>Method &amp; data</a>
     </div>
   </aside>
+  <div class="scrim" id="scrim"></div>
 
-  <main class="main">
-    <div class="topbar">
-      <div class="crumbs"><div class="small">Pages / <span id="crumb">Dashboard</span></div><h1 id="title">Dashboard</h1></div>
-      <div class="top-right">
-        <label class="search"><span data-icon="search"></span><input id="globalSearch" type="text" placeholder="Search entry, user, text…"></label>
-        <span class="pill" id="aiPill" title="Local LLM (Ollama) on this computer"><span class="dot" id="aiDot"></span><span id="aiText">Local AI…</span></span>
+  <div class="main">
+    <header class="top">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Menu"><span data-icon="menu"></span></button>
+      <label class="search"><span class="search-box"><span data-icon="search"></span><input id="globalSearch" type="text" placeholder="Search entries, users, red flags…" aria-label="Search"><kbd>/</kbd></span></label>
+      <div class="top-r">
+        <span class="pill period" id="periodPill"><span data-icon="calendar"></span><span id="periodText">Ledger period</span></span>
+        <span class="pill" id="aiPill" title="Local LLM (Ollama) on this computer"><span class="dot" id="aiDot"></span><span class="t" id="aiText">Local AI</span></span>
+        <button class="icon-btn" id="themeBtn" aria-label="Switch light/dark theme"></button>
+        <span class="user"><span class="av">T9</span></span>
       </div>
-    </div>
-    <div class="mobile-nav" id="mnav"></div>
+    </header>
+    <div class="page-h"><div><h1 id="title">Overview</h1><div class="sub" id="subtitle"></div></div><div id="headActions"></div></div>
 
     <section class="page" id="page-dashboard"></section>
     <section class="page" id="page-alerts"></section>
@@ -39,12 +45,12 @@
     <section class="page" id="page-genai"></section>
     <section class="page" id="page-method"></section>
     <div class="foot" id="foot"></div>
-  </main>
+  </div>
 </div>
 
 <div class="overlay" id="overlay"></div>
 <aside class="drawer" id="drawer" aria-hidden="true"></aside>
-<div class="toast" id="toast"></div>
+<div class="toast" id="toast" role="status"></div>
 
 <script src="assets/chart.umd.min.js"></script>
 <script src="assets/xlsx.full.min.js"></script>

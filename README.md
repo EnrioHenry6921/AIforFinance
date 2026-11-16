@@ -47,7 +47,8 @@ pipeline/
   prompts.py       PROMPT LIBRARY (system + user prompts, versioned)
   genai.py         local LLM calls (memos, entry nature, engagement summary) + template fallback
   run.py           runs everything -> web/data/dashboard.json + data/output/JE_audit_alerts.xlsx
-web/               static dashboard (HTML/CSS/JS, Chart.js, SheetJS) - deployed on Vercel
+web/               static dashboard (HTML/CSS/JS, Chart.js, SheetJS, Geist font) - deployed on Vercel
+                   design system adapted from our CapturePoint dashboard; light + dark theme
   index.html, assets/app.js, assets/style.css, data/dashboard.json
 ```
 
