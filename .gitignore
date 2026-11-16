@@ -1,0 +1,9 @@
+# raw ledger (54 MB) and generated working files: not committed
+data/raw/*
+!data/raw/README.md
+data/output/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+.vercel
