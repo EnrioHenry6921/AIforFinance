@@ -5,3 +5,10 @@ xgboost>=2.0
 requests
 holidays
 openpyxl
+Faker
+matplotlib
+streamlit
+nbformat
+nbclient
+nbconvert
+ipykernel

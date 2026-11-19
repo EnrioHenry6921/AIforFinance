@@ -11,7 +11,6 @@ Uses: test fixture, stand-in when the real file is missing, and Person 1's gener
     python -m pipeline.synthetic --format fec --out data/raw/synthetic_FEC.txt
 """
 import argparse
-import random
 
 import numpy as np
 import pandas as pd
@@ -33,9 +32,23 @@ def _lines(pid, pdate, edate, user, text, legs, ref=""):
              "ref_id": ref, "text": text} for a, amt, cd in legs]
 
 
+def _parties(seed, n_sup=25, n_cus=60):
+    """Supplier and customer names from Faker (German companies, matching SKR03); plain names without Faker."""
+    try:
+        from faker import Faker
+        fk = Faker("de_DE")
+        fk.seed_instance(seed)
+        sup = list(dict.fromkeys(fk.company() for _ in range(n_sup * 2)))[:n_sup]
+        cus = list(dict.fromkeys(fk.company() for _ in range(n_cus * 2)))[:n_cus]
+        return sup, cus
+    except ImportError:
+        return [f"Supplier {i:02d}" for i in range(n_sup)], [f"Customer {i:02d}" for i in range(n_cus)]
+
+
 def generate(entries=20000, years=(2023, 2024), anomaly_rate=0.008, seed=7):
+    """Same seed -> same ledger (every random draw goes through rng / the seeded Faker)."""
     rng = np.random.default_rng(seed)
-    random.seed(seed)
+    suppliers, customers = _parties(seed)
     days = pd.bdate_range(f"{years[0]}-01-02", f"{years[-1]}-12-30")
     rows, labels = [], {}
     n_anom = int(entries * anomaly_rate)
@@ -45,7 +58,9 @@ def generate(entries=20000, years=(2023, 2024), anomaly_rate=0.008, seed=7):
         d = pd.Timestamp(rng.choice(days))
         user = USERS[i % len(USERS)]
         ent = d + pd.Timedelta(days=int(rng.integers(0, 8)), hours=int(rng.integers(8, 17)), minutes=int(rng.integers(0, 60)))
-        prod = random.choice(PRODUCTS)
+        prod = str(rng.choice(PRODUCTS))
+        sup, cus = str(rng.choice(suppliers)), str(rng.choice(customers))
+        ref = f"RE-{d:%Y}-{i:06d}"
         net = round(float(rng.lognormal(np.log(400), 0.8)), 2)
         kind = i % 4
         mark = 0
@@ -58,7 +73,7 @@ def generate(entries=20000, years=(2023, 2024), anomaly_rate=0.008, seed=7):
             elif mark == 4:
                 ent = d + pd.Timedelta(days=int(rng.integers(30, 120)), hours=10)
             elif mark == 5:
-                ent = d + pd.Timedelta(days=1, hours=int(random.choice([21, 22, 23, 2, 3])))
+                ent = d + pd.Timedelta(days=1, hours=int(rng.choice([21, 22, 23, 2, 3])))
             elif mark == 6:
                 d = d + pd.Timedelta(days=(5 - d.weekday()) % 7)        # move to Saturday
                 ent = d + pd.Timedelta(days=2, hours=10)
@@ -67,20 +82,20 @@ def generate(entries=20000, years=(2023, 2024), anomaly_rate=0.008, seed=7):
             amt = round(float(rng.uniform(1500, 6000)), 2)
             legs, text = [("4950", amt, "D"), ("1000", amt, "C")], "Cash payment consulting"
         elif mark == 7:
-            legs, text = [("1600", net, "D"), ("1210", net, "C")], f"Payment supplier {prod}"
+            legs, text = [("1600", net, "D"), ("1210", net, "C")], f"Payment {sup} {prod}"
         elif mark == 8:
             legs, text = [("1600", net, "D"), ("1400", net, "C")], f"Clearing {prod}"
         elif kind == 0:
-            legs, text = [("3400", net, "D"), ("1576", vat, "D"), ("1600", net + vat, "C")], f"{prod} purchase"
+            legs, text = [("3400", net, "D"), ("1576", vat, "D"), ("1600", net + vat, "C")], f"{prod} purchase {sup}"
         elif kind == 1:
-            legs, text = [("1400", net + vat, "D"), ("8400", net, "C"), ("1776", vat, "C")], f"{prod} sale"
+            legs, text = [("1400", net + vat, "D"), ("8400", net, "C"), ("1776", vat, "C")], f"{prod} sale {cus}"
         elif kind == 2:
-            legs, text = [("1600", net, "D"), ("1100", net, "C")], f"Payment supplier {prod}"
+            legs, text = [("1600", net, "D"), ("1100", net, "C")], f"Payment {sup} {prod}"
         else:
-            legs, text = [("1100", net, "D"), ("1400", net, "C")], f"Customer payment {prod}"
+            legs, text = [("1100", net, "D"), ("1400", net, "C")], f"Customer payment {cus} {prod}"
         if i % 500 == 0:                                                  # monthly-like manual entries
             pid, legs, text = f"p_{i}", [("4210", 2500.0, "D"), ("1600", 2500.0, "C")], "Rent accrual"
-        rows += _lines(pid, d, ent, user, text, legs)
+        rows += _lines(pid, d, ent, user, text, legs, ref)
         labels[pid] = mark
     df = pd.DataFrame(rows)
     df["marking"] = df["posting_id"].map(labels)

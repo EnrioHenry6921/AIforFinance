@@ -231,3 +231,20 @@ def test_forecast_uses_no_future_information():
     b = forecast.forecast_revenue(led(v2), "SKR03")
     assert a["months"][:-1] == b["months"][:-1]                     # a later month never changes an earlier verdict
     assert b["months"][-1]["flag"] and not a["months"][-1]["flag"]
+
+
+def test_streamlit_app_runs():
+    """The triage app loads the website data and filters without errors."""
+    st_testing = pytest.importorskip("streamlit.testing.v1")
+    if not (config.ROOT / "web" / "data" / "dashboard.json").exists():
+        pytest.skip("no website data")
+    at = st_testing.AppTest.from_file(str(config.ROOT / "app_streamlit.py"), default_timeout=180).run()
+    assert not at.exception
+    at.sidebar.slider[1].set_value(90).run()
+    assert not at.exception and any("entries match" in c.value for c in at.caption)
+
+
+def test_synthetic_is_reproducible_and_uses_faker():
+    a = synthetic.generate(entries=300, years=(2023, 2024), seed=5)
+    assert a.equals(synthetic.generate(entries=300, years=(2023, 2024), seed=5))
+    assert a["ref_id"].str.startswith("RE-").all()

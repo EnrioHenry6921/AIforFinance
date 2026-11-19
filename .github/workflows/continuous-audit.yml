@@ -1,0 +1,49 @@
+# Continuous auditing (brief: "scheduled pipeline: ingest a new export, run tests, score entries,
+# generate memos, send alert email"). Runs every Monday and on demand (Actions tab -> Run workflow).
+#
+# Real client ledgers are confidential and never committed, so the job scores the newest file in
+# data/inbox/ if one is committed there, otherwise a fresh synthetic export (stand-in for the client's
+# weekly export). Email: add repository secrets JG_SMTP_HOST, JG_SMTP_PORT, JG_SMTP_USER,
+# JG_SMTP_PASSWORD, JG_ALERT_TO. Without them the email is attached as a .eml file to the run.
+name: continuous-audit
+on:
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -r requirements.txt pytest nbformat nbclient nbconvert ipykernel
+      - name: Run the tests
+        run: python -m pytest -q
+      - name: New export (stand-in when no client file is committed)
+        run: |
+          mkdir -p data/inbox
+          if [ -z "$(ls -A data/inbox 2>/dev/null | grep -v '^done$')" ]; then
+            python -m pipeline.synthetic --entries 20000 --format dib --out "data/inbox/export_$(date +%Y-%m-%d).csv"
+          fi
+      - name: Score 100% of entries, write memos, send the alert email
+        env:
+          JG_SMTP_HOST: ${{ secrets.JG_SMTP_HOST }}
+          JG_SMTP_PORT: ${{ secrets.JG_SMTP_PORT }}
+          JG_SMTP_USER: ${{ secrets.JG_SMTP_USER }}
+          JG_SMTP_PASSWORD: ${{ secrets.JG_SMTP_PASSWORD }}
+          JG_ALERT_TO: ${{ secrets.JG_ALERT_TO }}
+        run: python -m pipeline.watch
+      - name: Report (notebook + HTML + PDF)
+        run: python -m ipykernel install --user --name python3 && python report/build_report.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: audit-${{ github.run_number }}
+          path: |
+            data/output/JE_audit_alerts.xlsx
+            data/output/entries_scored.csv
+            data/output/memos/
+            data/output/alert_email.eml
+            report/JournalGuard_report.*
+          if-no-files-found: warn

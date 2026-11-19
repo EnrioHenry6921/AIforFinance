@@ -45,8 +45,14 @@ python -m pipeline.run --inject 42              # add 42 labelled demo anomalies
 python -m pipeline.ask "Which users have the most off-hours alerts?"
 python -m pipeline.watch                        # score every file dropped in data/inbox and email the alerts
 python -m pipeline.synthetic --entries 20000 --format dib --out data/raw/synthetic.csv   # test data
-python -m pytest -q                             # 22 tests incl. the original file (~3 min)
+python -m pytest -q                             # 24 tests incl. the original file (~4 min)
+streamlit run app_streamlit.py                  # triage app: filters, SHAP, memo, decisions, Excel export
+python report/build_report.py                   # report: notebook + HTML + PDF with the performance metrics
 ```
+
+**Continuous auditing:** `.github/workflows/continuous-audit.yml` runs every Monday (and on demand from the
+Actions tab): tests → new export (a committed file in `data/inbox/`, else a synthetic stand-in) → score 100% →
+memos → alert email (repository secrets `JG_SMTP_*`) → report. Results are attached to the run.
 
 Optional local Gen AI: install Ollama, `ollama pull llama3`, then `OLLAMA_ORIGINS="*" ollama serve` so the
 website's "Rewrite with local AI" and "Ask" buttons work. Client data never leaves the laptop.
@@ -61,6 +67,8 @@ Email for `watch.py` only through environment variables `JG_SMTP_HOST`, `JG_SMTP
 | `data/output/JE_audit_alerts.xlsx` | working papers: top alerts with memo, evidence, procedures, library codes, empty auditor decision columns; metrics; datacard; forecast |
 | `data/output/entries_scored.csv` | **100% of entries** with every feature and every layer's score |
 | `data/output/memos/audit_memo_<id>.txt` | one memo per alert in Person 3's layout |
+| `data/output/decisions.csv` | auditor decisions recorded in the Streamlit app |
+| `report/JournalGuard_report.ipynb / .html / .pdf` | the report: data, EDA, method, metrics, circularity test, forecast, Gen AI, limitations |
 
 ## What's inside
 
@@ -81,6 +89,8 @@ pipeline/
   prompts.py        prompt library v3 (system + user prompts, change log)
   genai.py          nature, themes, memos, engagement summary, ask; template fallback without LLM
   run.py            runs everything        ask.py   questions in plain language        watch.py   inbox + email
+app_streamlit.py    Streamlit triage app (same data as the website)
+report/             build_report.py -> JournalGuard_report.ipynb / .html / .pdf
 team/person2, team/person3   teammates' deliverables, kept as delivered
 models/person2_model.json    Person 2's trained model (tools/export_person2_model.py re-creates it)
 tests/                       pytest suite; CI in .github/workflows/ci.yml
