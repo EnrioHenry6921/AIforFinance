@@ -96,8 +96,11 @@ def score(lines, path=None):
     e = features(lines)
     p = predict_proba(e, path)
     m = load(path)
-    known_users = set(m["categories"][m["categorical_features"].index("user")])
-    applicable = e["user"].isin(known_users).mean() > 0.5     # trained on DIB users/accounts only
+    cats = dict(zip(m["categorical_features"], m["categories"]))
+    users_known = e["user"].isin(set(cats["user"])).mean()
+    sigs_known = e["account_signature"].isin(set(cats["account_signature"])).mean() if "account_signature" in e else 0.0
+    # trained on the DIB ledger only: apply it only where both its users and its account combinations are known
+    applicable = users_known > 0.5 and sigs_known > 0.9
     out = pd.DataFrame({"entry_id": e.index, "p2_score": (p * 100).round(1)})
     out["p2_level"] = np.where(out["p2_score"] >= 70, "High", np.where(out["p2_score"] >= 40, "Medium", "Low"))
     out["p2_predicted"] = (p >= 0.5).astype(int)

@@ -45,7 +45,7 @@ python -m pipeline.run --inject 42              # add 42 labelled demo anomalies
 python -m pipeline.ask "Which users have the most off-hours alerts?"
 python -m pipeline.watch                        # score every file dropped in data/inbox and email the alerts
 python -m pipeline.synthetic --entries 20000 --format dib --out data/raw/synthetic.csv   # test data
-python -m pytest -q                             # 16 tests incl. the original file (~3 min)
+python -m pytest -q                             # 22 tests incl. the original file (~3 min)
 ```
 
 Optional local Gen AI: install Ollama, `ollama pull llama3`, then `OLLAMA_ORIGINS="*" ollama serve` so the

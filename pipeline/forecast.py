@@ -8,6 +8,8 @@ import pandas as pd
 
 from . import config
 
+DEFAULT_BAND = 0.25   # until three earlier months give a measured error
+
 
 def forecast_revenue(lines, chart="SKR03"):
     pref = tuple(config.CHARTS[chart]["revenue_prefixes"])
@@ -20,22 +22,26 @@ def forecast_revenue(lines, chart="SKR03"):
     if len(years) < 2:
         return {"history": [{"month": t.strftime("%Y-%m"), "actual": round(float(v), 2)} for t, v in rev.items()],
                 "months": [], "note": "Needs at least two years of history to forecast."}
-    out, ratios = [], []
+    out, errors = [], []
     for t, actual in rev[rev.index.year > years[0]].items():
         ly = rev.get(pd.Timestamp(t.year - 1, t.month, 1))
         if ly is None or ly <= 0:
             continue                                                  # no comparable month: no forecast (never NaN)
-        ytd_now = rev[(rev.index.year == t.year) & (rev.index < t)]
-        ytd_ly = rev[(rev.index.year == t.year - 1) & rev.index.month.isin(ytd_now.index.month)]
-        growth = float(ytd_now.sum() / ytd_ly.sum()) if len(ytd_now) and ytd_ly.sum() > 0 else 1.0
+        # growth so far this year, on matching months only (a month counts only if last year has it too)
+        now = rev[(rev.index.year == t.year) & (rev.index < t)]
+        prev = pd.Series({m: rev.get(pd.Timestamp(t.year - 1, m.month, 1)) for m in now.index}, dtype=float)
+        ok = prev.notna() & (prev > 0)
+        growth = float(now[ok].sum() / prev[ok].sum()) if ok.any() and prev[ok].sum() > 0 else 1.0
         exp = float(ly) * growth
-        ratios.append(actual / exp if exp else 1.0)
-        out.append({"month": t.strftime("%Y-%m"), "actual": round(float(actual), 2), "expected": round(exp, 2)})
-    sd = float(np.std(np.log(np.clip(ratios, 1e-6, None)))) if ratios else 0.1
-    band = max(0.10, 2 * sd)
-    for o in out:
-        o["low"], o["high"] = round(o["expected"] * (1 - band), 2), round(o["expected"] * (1 + band), 2)
-        o["flag"] = bool(o["actual"] > o["high"] or o["actual"] < o["low"])
+        # the band uses only the errors of EARLIER months: no information from the future
+        band = max(0.10, 2 * float(np.std(errors))) if len(errors) >= 3 else DEFAULT_BAND
+        out.append({"month": t.strftime("%Y-%m"), "actual": round(float(actual), 2), "expected": round(exp, 2),
+                    "low": round(exp * (1 - band), 2), "high": round(exp * (1 + band), 2),
+                    "band_pct": round(band * 100, 1), "growth": round(growth, 3),
+                    "flag": bool(actual > exp * (1 + band) or actual < exp * (1 - band))})
+        if exp > 0 and actual > 0:
+            errors.append(float(np.log(actual / exp)))
     hist = [{"month": t.strftime("%Y-%m"), "actual": round(float(v), 2)} for t, v in rev.items() if t.year == years[0]]
-    return {"history": hist, "months": out, "band_pct": round(band * 100, 1),
-            "method": "Seasonal naive (same month last year) x running year-to-date growth; band = 2 x std of log errors"}
+    return {"history": hist, "months": out, "band_pct": out[-1]["band_pct"] if out else None,
+            "method": "Seasonal naive (same month last year) x year-to-date growth on matching months; "
+                      "band = 2 x std of the log errors of earlier months only (±25% until 3 months are known)"}

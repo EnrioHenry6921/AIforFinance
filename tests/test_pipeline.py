@@ -164,3 +164,67 @@ def test_original_dib(tmp):
     assert js["kpis"]["labelled"] == 850
     assert m["models"]["Risk score (combined)"]["pr_auc"] > 0.4      # honest temporal test, see README
     assert m["recall_seen_types"]["Risk score (combined)"] > 0.75
+
+
+# ---------------------------------------------------------------- regression tests (loader + forecast fixes)
+def _write(tmp, name, df, sep=","):
+    p = tmp / name
+    df.to_csv(p, sep=sep, index=False)
+    return p
+
+
+def test_ids_with_leading_zeros_stay_distinct(tmp):
+    df = pd.DataFrame({"entry_id": ["001", "001", "1", "1"], "posting_date": ["2024-01-05"] * 4,
+                       "account": ["0401", "8400", "1200", "8400"], "debit": ["100", "0", "50", "0"],
+                       "credit": ["0", "100", "0", "50"]})
+    lines, _ = loader.load(str(_write(tmp, "zeros.csv", df)))
+    assert sorted(lines["entry_id"].unique()) == ["001", "1"]
+    assert "0401" in set(lines["account"])                         # leading zero kept on accounts too
+
+
+def test_explicit_manual_flag_wins(tmp):
+    df = pd.DataFrame({"entry_id": ["a_1", "a_1", "p_2", "p_2"], "posting_date": ["2024-01-05"] * 4,
+                       "account": ["1200", "8400", "1200", "8400"], "amount": ["100", "-100", "50", "-50"],
+                       "is_manual": ["1", "1", "0", "0"]})
+    lines, meta = loader.load(str(_write(tmp, "flag.csv", df)))
+    src = lines.groupby("entry_id")["source"].first()
+    assert src["a_1"] == "manual" and src["p_2"] == "system"         # the id prefix would say the opposite
+    assert meta["manual_flag_column"] == "is_manual"
+
+
+def test_labels_through_mapping(tmp):
+    df = pd.DataFrame({"JE": ["1", "1", "2", "2"], "D": ["05/01/2024"] * 4, "GL": ["1200", "8400", "1200", "8400"],
+                       "Amt": ["100", "-100", "50", "-50"], "Flagged": ["yes", "yes", "no", "no"],
+                       "Why": ["Round amount", "Round amount", "", ""]})
+    mp = tmp / "lab_map.json"
+    mp.write_text(json.dumps({"entry_id": "JE", "posting_date": "D", "account": "GL", "amount": "Amt",
+                              "is_anomaly": "Flagged", "anomaly_type": "Why"}))
+    lines, meta = loader.load(str(_write(tmp, "lab.csv", df)), str(mp))
+    e = lines.groupby("entry_id").agg(a=("is_anomaly", "max"), t=("anomaly_type", "first"))
+    assert e.loc["1", "a"] == 1 and e.loc["1", "t"] == "Round amount" and e.loc["2", "a"] == 0
+    assert lines["posting_date"].iloc[0] == pd.Timestamp("2024-01-05")   # 05/01 = 5 January
+
+
+def test_generic_file_sharing_dib_names_is_not_read_as_dib(tmp):
+    df = pd.DataFrame({"posting_id": ["x1", "x1"], "posting_date": ["2024-03-01"] * 2, "gl_account": ["1200", "8400"],
+                       "amount": ["10", "-10"]})                        # no cd_flag, entered_date, user, text
+    lines, meta = loader.load(str(_write(tmp, "dibish.csv", df)))
+    assert meta["format"] == "Generic ledger"
+    assert lines["debit"].sum() == 10 and lines["credit"].sum() == 10
+
+
+def test_amount_formats():
+    s = pd.Series(["1234.56", "1234,56", "1 234,56", "1,234.56", "1.234,56", "-5", ""])
+    assert loader._num(s).tolist() == [1234.56, 1234.56, 1234.56, 1234.56, 1234.56, -5.0, 0.0]
+
+
+def test_forecast_uses_no_future_information():
+    from pipeline import forecast
+    idx = pd.date_range("2023-01-01", "2024-12-01", freq="MS")
+    v = np.array([100] * 12 + [100, 110, 95, 105, 100, 98, 102, 100, 97, 103, 100, 101], float)
+    led = lambda vals: pd.DataFrame({"account": "8400", "posting_date": idx, "credit": vals, "debit": 0.0})
+    a = forecast.forecast_revenue(led(v), "SKR03")
+    v2 = v.copy(); v2[-1] = 500
+    b = forecast.forecast_revenue(led(v2), "SKR03")
+    assert a["months"][:-1] == b["months"][:-1]                     # a later month never changes an earlier verdict
+    assert b["months"][-1]["flag"] and not a["months"][-1]["flag"]

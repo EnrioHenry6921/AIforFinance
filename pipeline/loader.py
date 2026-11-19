@@ -42,23 +42,55 @@ CANDIDATES = {
     "ref_id": ["ref_id", "reference", "document_number", "invoice_number", "pieceref"],
     "is_anomaly": ["is_anomaly", "label", "anomaly", "fraud_label"],
     "anomaly_type": ["anomaly_type", "marking", "scenario"],
+    "source": ["source", "is_manual", "manual", "manual_flag", "entry_type", "entry_source"],
 }
+MANUAL_WORDS = {"manual", "1", "1.0", "true", "yes", "y", "od", "an", "m"}
+SYSTEM_WORDS = {"system", "0", "0.0", "false", "no", "n", "auto", "automatic", "batch", "s"}
+
+# a file goes to a dedicated reader only with the FULL signature of that format; a generic export
+# that merely shares some column names (posting_id, EcritureNum) is read by from_generic
+DIB_COLS = {"posting_id", "posting_date", "entered_date", "gl_account", "user", "text"}
+FEC_COLS = {"JournalCode", "EcritureNum", "EcritureDate", "CompteNum", "CompteLib", "EcritureLib", "Debit", "Credit"}
 
 
 def _num(s):
+    """Amounts as floats. Handles 1234.56, 1234,56 (French), 1 234,56, 1,234.56 and 1.234,56."""
     if pd.api.types.is_numeric_dtype(s):
         return s.astype(float).fillna(0.0)
-    return pd.to_numeric(s.astype(str).str.replace(" ", "").str.replace(" ", "").str.replace(",", "."),
-                         errors="coerce").fillna(0.0)
+    t = s.astype(str).str.strip().str.replace("[\\s\u00a0\u202f']", "", regex=True)
+    both = t.str.contains(",", regex=False) & t.str.contains(".", regex=False)
+    comma_dec = both & (t.str.rfind(",") > t.str.rfind("."))                 # 1.234,56
+    t = t.where(~(both & ~comma_dec), t.str.replace(",", "", regex=False))   # 1,234.56 -> 1234.56
+    t = t.where(~comma_dec, t.str.replace(".", "", regex=False))             # 1.234,56 -> 1234,56
+    t = t.str.replace(",", ".", regex=False)
+    return pd.to_numeric(t, errors="coerce").fillna(0.0)
 
 
 def _date(s):
+    """Dates: YYYYMMDD (FEC), ISO (year first), else day first (02/01/2023 = 2 January, as in France and Germany)."""
     s = s.astype(str).str.strip()
     d = pd.to_datetime(s, format="%Y%m%d", errors="coerce")
-    rest = d.isna()
-    if rest.any():
-        d[rest] = pd.to_datetime(s[rest], errors="coerce", format="mixed")
+    blank = s.str.lower().isin({"", "nan", "none", "nat"})
+    iso = s.str.match(r"^\d{4}-\d{2}-\d{2}")
+    m = d.isna() & ~blank & iso
+    if m.any():
+        d[m] = pd.to_datetime(s[m], errors="coerce", format="mixed")
+    m = d.isna() & ~blank & ~iso
+    if m.any():
+        d[m] = pd.to_datetime(s[m], errors="coerce", format="mixed", dayfirst=True)
     return d
+
+
+def _ids(s):
+    """Entry ids stay text: '001' and '1' are different entries."""
+    return s.astype(str).str.strip()
+
+
+def _source_from(col, fallback):
+    """An explicit manual/system column wins; values it does not recognise keep the fallback."""
+    v = col.astype(str).str.strip().str.lower()
+    return pd.Series(np.where(v.isin(MANUAL_WORDS), "manual", np.where(v.isin(SYSTEM_WORDS), "system", fallback)),
+                     index=col.index)
 
 
 def _find(cols, names):
@@ -66,10 +98,12 @@ def _find(cols, names):
     return next((low[n] for n in names if n in low), None)
 
 
-def _labels(df, n):
-    """Ground truth if the file has it: DIB label/marking, or a teammate's is_anomaly/anomaly_type."""
-    lab = _find(df.columns, CANDIDATES["is_anomaly"])
-    typ = _find(df.columns, CANDIDATES["anomaly_type"])
+def _labels(df, n, mapping=None):
+    """Ground truth if the file has it: DIB label/marking, a teammate's is_anomaly/anomaly_type,
+    or the columns named in the mapping file."""
+    mapping = mapping or {}
+    lab = mapping["is_anomaly"] if mapping.get("is_anomaly") in df.columns else _find(df.columns, CANDIDATES["is_anomaly"])
+    typ = mapping["anomaly_type"] if mapping.get("anomaly_type") in df.columns else _find(df.columns, CANDIDATES["anomaly_type"])
     if lab is None and typ is None:
         return pd.Series(0, index=df.index), pd.Series("", index=df.index), ""
     def truthy(v):
@@ -100,7 +134,7 @@ def from_dib(df):
     doc = df["document_date"] if "document_date" in df.columns else df["posting_date"]
     ref = df["ref_id"] if "ref_id" in df.columns else pd.Series("", index=df.index)
     out = pd.DataFrame({
-        "entry_id": df["posting_id"].astype(str),
+        "entry_id": _ids(df["posting_id"]),
         "posting_date": _date(df["posting_date"]).dt.normalize(),
         "document_date": _date(doc).dt.normalize(),
         "entered_at": _date(df["entered_date"]),
@@ -116,7 +150,7 @@ def from_dib(df):
 
 def from_fec(df):
     out = pd.DataFrame({
-        "entry_id": df["JournalCode"].astype(str) + "_" + df["EcritureNum"].astype(str),
+        "entry_id": _ids(df["JournalCode"]) + "_" + _ids(df["EcritureNum"]),
         "posting_date": _date(df["EcritureDate"]),
         "document_date": _date(df["PieceDate"]).fillna(_date(df["EcritureDate"])),
         "entered_at": _date(df["ValidDate"]).fillna(_date(df["EcritureDate"])),   # FEC: validation DATE, no time
@@ -148,18 +182,14 @@ def from_generic(df, mapping=None):
     get = lambda k, default="": df[cols[k]] if cols[k] else pd.Series(default, index=df.index)
     pdate = _date(df[cols["posting_date"]])
     out = pd.DataFrame({
-        "entry_id": df[cols["entry_id"]].astype(str), "posting_date": pdate.dt.normalize(),
+        "entry_id": _ids(df[cols["entry_id"]]), "posting_date": pdate.dt.normalize(),
         "document_date": _date(get("document_date")).fillna(pdate).dt.normalize(),
         "entered_at": _date(get("entered_at")).fillna(pdate),
         "account": df[cols["account"]].astype(str), "account_name": get("account_name").astype(str),
         "debit": debit, "credit": credit, "user": get("user", "unknown").astype(str),
         "text": get("text").astype(str), "ref_id": get("ref_id").astype(str),
     })
-    src = mapping.get("source") if mapping else None
-    if src and src in df.columns:
-        out["source"] = df[src].astype(str).str.lower().map(lambda v: "manual" if v in {"manual", "1", "true", "od"} else "system")
-    else:
-        out["source"] = out["entry_id"].str.split("_").str[0].isin(config.MANUAL_PREFIXES).map({True: "manual", False: "system"})
+    out["source"] = out["entry_id"].str.split("_").str[0].isin(config.MANUAL_PREFIXES).map({True: "manual", False: "system"})
     return out
 
 
@@ -192,8 +222,8 @@ def read_any(path):
     if path.suffix.lower() in (".xlsx", ".xls"):
         return pd.read_excel(path, dtype=str)
     sep = detect_sep(path)
-    dtype = str if path.suffix.lower() == ".txt" else None
-    return pd.read_csv(path, sep=sep, dtype=dtype, low_memory=False, encoding_errors="replace")
+    # everything as text: ids like '001' and accounts like '0401' keep their zeros; amounts/dates parsed later
+    return pd.read_csv(path, sep=sep, dtype=str, keep_default_na=False, low_memory=False, encoding_errors="replace")
 
 
 def load(path=None, mapping=None, chart=None):
@@ -203,15 +233,21 @@ def load(path=None, mapping=None, chart=None):
     raw.columns = [str(c).strip() for c in raw.columns]
     if isinstance(mapping, (str, Path)):
         mapping = json.loads(Path(mapping).read_text())
+    cols = set(raw.columns)
+    dib_amounts = {"amount", "cd_flag"} <= cols or {"debit", "credit"} <= cols
     if mapping:
         lines, fmt = from_generic(raw, mapping), "Mapped file"
-    elif "posting_id" in raw.columns and "gl_account" in raw.columns:
+    elif DIB_COLS <= cols and dib_amounts:
         lines, fmt = from_dib(raw), "DIB general ledger" + (" (original, labelled)" if "marking" in raw.columns else "")
-    elif "EcritureNum" in raw.columns:
+    elif FEC_COLS <= cols:
         lines, fmt = from_fec(raw), "French FEC"
     else:
         lines, fmt = from_generic(raw), "Generic ledger"
-    lines["is_anomaly"], lines["anomaly_type"], label_source = _labels(raw, len(raw))
+    mp = mapping or {}
+    src_col = mp["source"] if mp.get("source") in raw.columns else _find(raw.columns, CANDIDATES["source"])
+    if src_col:                                                          # an explicit manual/system flag wins
+        lines["source"] = _source_from(raw[src_col], lines["source"])
+    lines["is_anomaly"], lines["anomaly_type"], label_source = _labels(raw, len(raw), mapping)
     lines["label_source"] = label_source
     lines["text"] = clean_text(lines["text"])
     lines = lines[lines["entry_id"].ne("") & lines["entry_id"].ne("nan")]
@@ -220,6 +256,7 @@ def load(path=None, mapping=None, chart=None):
         chart = "PCG" if fmt == "French FEC" or lines["account"].str.match(r"^(411|401|512|70\d)").mean() > 0.2 else "SKR03"
     has_time = bool(((lines["entered_at"].dt.hour + lines["entered_at"].dt.minute) > 0).mean() > 0.05)
     meta = {"format": fmt, "chart": chart, "has_entry_time": has_time, "label_source": label_source,
+            "manual_flag_column": src_col,
             "file": path.name, "leaky_columns_ignored": [c for c in config.DIB_LEAKY_COLUMNS if c in raw.columns]}
     return lines[STD + LABELS].reset_index(drop=True), meta
 
