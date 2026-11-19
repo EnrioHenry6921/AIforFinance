@@ -133,7 +133,10 @@ def main(argv=None):
     log("7/8 Gen AI: nature, themes, memos, engagement summary")
     llm = genai.ollama_available()
     log(f"    local LLM {'available: ' + a.model if llm else 'NOT running -> memos from Person 3’s library'}")
-    top = s.head(config.TOP_N_EXPORT).copy()
+    # the website gets every entry scoring WEB_MIN_SCORE+ (so the score sliders have a real range):
+    # the top TOP_N_EXPORT in full, the rest as compact rows whose memos load on demand
+    rank = np.arange(len(s))
+    top = s[(rank < config.TOP_N_EXPORT) | (s["risk_score"] >= config.WEB_MIN_SCORE) | (s["alert"] == 1)].copy()
     top["nature"] = [genai.nature(r, meta["chart"]) for _, r in top.iterrows()]
     top["theme"] = [genai.theme(r) for _, r in top.iterrows()]
     memos = []
@@ -141,9 +144,11 @@ def main(argv=None):
         use = llm and n < a.llm_top
         if use:
             log(f"    memo {n + 1}/{a.llm_top} {r['entry_id']}")
-        memos.append(genai.memo(r, use, a.model, a.language))
+        memos.append(genai.memo(r, use, a.model, a.language) if (n < config.TOP_N_EXPORT or r["alert"] == 1) else None)
     top["memo"] = memos
+    top["full"] = np.arange(len(top)) < config.TOP_N_EXPORT
     alerts = top[top["alert"] == 1]
+    log(f"    {len(alerts):,} memos (all alerts); website rows: {int(top['full'].sum())} full + {int((~top['full']).sum()):,} compact")
     themes = dict(Counter(genai.theme(r) for _, r in s[s["alert"] == 1].iterrows()).most_common())
     lab = s[s["is_anomaly"] == 1]
     gt = (f"Ground truth ({label_source}): {int(lab['alert'].sum())} of {len(lab)} labelled entries are alerted."
@@ -162,6 +167,18 @@ def main(argv=None):
                    for r in g.itertuples()] for k, g in det.groupby("entry_id")}
 
     def rec(r):
+        if not r["full"]:                                  # compact row: no memo/recommendations inside
+            return {
+                "id": r["entry_id"], "score": float(r["risk_score"]), "alert": int(r["alert"]), "level": r["risk_level"],
+                "rules_score": float(r["rules_score"]), "iforest": round(float(r["iforest_pct"]), 3),
+                "xgb": round(float(r["xgb_proba"]), 3), "p2": None if pd.isna(r["p2_score"]) else float(r["p2_score"]),
+                "posting_date": f"{r['posting_date']:%Y-%m-%d}", "entered_at": f"{r['entered_at']:%Y-%m-%d %H:%M}",
+                "delay": int(r["entry_delay_days"]), "user": r["user"], "text": r["text"], "source": r["source"],
+                "nature": r["nature"], "theme": r["theme"], "amount": round(float(r["amount"]), 2), "accounts": r["accounts"],
+                "main_account": f"{r['main_account']} {r['main_account_name']}", "rules": list(r["rule_hits"]),
+                "shap": r["shap_top"], "lazy": 1 if r["memo"] is not None else 0,
+                "injected": (r["anomaly_type"] or "labelled") if r["is_anomaly"] else None, "lines": det_map.get(r["entry_id"], []),
+            }
         return {
             "id": r["entry_id"], "score": float(r["risk_score"]), "alert": int(r["alert"]), "level": r["risk_level"],
             "rules_score": float(r["rules_score"]), "iforest": round(float(r["iforest_pct"]), 3), "lof": round(float(r["lof_pct"]), 3),
@@ -227,10 +244,25 @@ def main(argv=None):
         "prompts": {"version": prompts.PROMPT_VERSION, "log": prompts.PROMPT_LOG, "library": prompts.LIBRARY},
         "recommendation_library": list(recommend.library().values()),
         "alerts": [rec(r) for _, r in top.iterrows()],
+        "web_rows": {"full": int(top["full"].sum()), "compact": int((~top["full"]).sum()), "min_score": config.WEB_MIN_SCORE},
+        "flag_codes": recommend.FLAG_TO_CODE, "generic_recommendation": recommend.GENERIC,
     }
     out = config.WEB_DATA if a.out == str(config.WEB_DATA) else __import__("pathlib").Path(a.out)
     out.write_text(json.dumps(clean_json(data), ensure_ascii=False, allow_nan=False))
     log(f"    {out} ({out.stat().st_size / 1e6:.1f} MB)")
+    # memos of the compact alerts: chunk files next to dashboard.json, loaded only when one is opened
+    chunk_dir = out.parent / "memos"
+    chunk_dir.mkdir(exist_ok=True)
+    for old in chunk_dir.glob("*.json"):
+        old.unlink()
+    lazy = top[~top["full"] & top["memo"].notna()]
+    index = {}
+    for i in range(0, len(lazy), config.MEMO_CHUNK):
+        part = lazy.iloc[i:i + config.MEMO_CHUNK]
+        name = f"memos_{i // config.MEMO_CHUNK:03d}.json"
+        (chunk_dir / name).write_text(json.dumps(clean_json(dict(zip(part["entry_id"], part["memo"]))), ensure_ascii=False))
+        index.update({k: name for k in part["entry_id"]})
+    (chunk_dir / "index.json").write_text(json.dumps(index))
 
     # ---- Excel working papers + one memo file per alert
     memo_dir = config.OUT_DIR / "memos"
@@ -239,7 +271,7 @@ def main(argv=None):
         old.unlink()
     for _, r in alerts.iterrows():
         (memo_dir / f"audit_memo_{r['entry_id']}.txt").write_text(genai.memo_text(r["memo"], r), encoding="utf-8")
-    xl = top.copy()
+    xl = alerts.copy()
     xl["red_flags"] = xl["rule_hits"].map("; ".join)
     xl["shap_drivers"] = xl["shap_top"].map(lambda d: "; ".join(f"{x['feature']} (+{x['shap']})" for x in d))
     for k in ["why_suspicious", "assertion_at_risk", "source"]:

@@ -73,7 +73,7 @@
   const S = {
     cutoff: 50, minScore: 0, q: "", param: "all", status: "all", source: "all", shown: 50, tab: "entries",
     decisions: store.get("je-audit-decisions", {}), memos: store.get("je-audit-memos", {}),
-    aiOnline: false, aiModels: [], model: store.get("je-audit-model", "llama3:latest"), language: "English",
+    aiOnline: false, lazyMemos: {}, memoIndex: null, aiModels: [], model: store.get("je-audit-model", "llama3:latest"), language: "English",
   };
   const charts = {};
   const mkChart = (id, cfg) => { if (charts[id]) charts[id].destroy(); const el = document.getElementById(id); if (el) charts[id] = new Chart(el, cfg); };
@@ -112,7 +112,26 @@
       return true;
     });
   }
-  const memoOf = a => S.memos[a.id] || a.memo;
+  const memoOf = a => S.memos[a.id] || a.memo || S.lazyMemos[a.id] || null;
+  // recommendations: stored for the top alerts, rebuilt from the same flag -> library mapping for compact rows
+  const recsOf = a => {
+    if (a.recommendations) return a.recommendations;
+    const lib = Object.fromEntries((D.recommendation_library || []).map(r => [String(r.marking_code), r]));
+    const out = [], seen = new Set();
+    [...a.rules, ...a.shap.map(x => x.feature)].forEach(f => {
+      const c = (D.flag_codes || {})[f];
+      if (c && !seen.has(c) && lib[c]) { seen.add(c); out.push({ code: c, signal: f, ...lib[c] }); }
+    });
+    return out.length ? out : [{ ...(D.generic_recommendation || {}), signal: "model score" }];
+  };
+  // memos of the compact alerts live in data/memos/*.json, fetched only when needed
+  async function loadMemos(ids) {
+    const need = ids.filter(id => !S.lazyMemos[id] && D.alerts.find(a => a.id === id)?.lazy);
+    if (!need.length) return;
+    if (!S.memoIndex) S.memoIndex = await fetch("data/memos/index.json").then(r => r.json());
+    const files = [...new Set(need.map(id => S.memoIndex[id]).filter(Boolean))];
+    await Promise.all(files.map(f => fetch("data/memos/" + f).then(r => r.json()).then(o => Object.assign(S.lazyMemos, o))));
+  }
 
   // ---------------------------------------------------------------- local AI (Ollama on the auditor's computer)
   const OLLAMA = "http://localhost:11434";
@@ -160,7 +179,7 @@
       threshold: D.settings.approval_threshold, perf_mat: pm, risk_level: a.level,
       hour_text: D.settings.has_entry_time ? `, at ${a.entered_at.slice(11, 13)}:00` : "",
       p2: a.p2 === null || a.p2 === undefined ? "not applicable" : `${a.p2}/100`,
-      library: (a.recommendations || []).map(r => `- [${r.code}] ${r.anomaly} (signal: ${r.signal}): risk: ${r.potential_risk} | evidence: ${r.evidence_to_request} | procedure: ${r.audit_procedure}`).join("\n"),
+      library: recsOf(a).map(r => `- [${r.code}] ${r.anomaly} (signal: ${r.signal}): risk: ${r.potential_risk} | evidence: ${r.evidence_to_request} | procedure: ${r.audit_procedure}`).join("\n"),
     };
   }
 
@@ -181,7 +200,7 @@
   function renderDashboard() {
     const k = D.kpis, m = D.metrics, comb = m.models["Risk score (combined)"] || {}, demo = k.labelled > 0;
     const alerts = alertsNow(), open = alerts.filter(a => !decisionOf(a.id));
-    head("Overview", `${esc(D.dataset.datacard.period)} · <b style="color:var(--ink)">${nf(totalAlerts())}</b> alerts · top ${nf(alerts.length)} loaded here`,
+    head("Overview", `${esc(D.dataset.datacard.period)} · <b style="color:var(--ink)">${nf(totalAlerts())}</b> alerts at cut-off ${S.cutoff}`,
       `<a class="link" href="#alerts"><span data-icon="alert"></span>Start triage</a>`);
     const types = m.by_type || [];
     const heldN = types.filter(t => t.held_out).reduce((s, t) => s + t.n, 0);
@@ -262,7 +281,7 @@
     const cols = { "P1 Timing": t.acc, "P2 Amount": t.p2, Context: t.c2, "ML only": t.c3 };
     mkChart("cParam", { type: "doughnut", data: { labels: order, datasets: [{ data: order.map(p => byParam[p]), backgroundColor: order.map(p => cols[p]), borderWidth: 0, spacing: 3, borderRadius: 6 }] },
       options: { responsive: true, maintainAspectRatio: false, cutout: "74%" } });
-    $("#paramLegend").innerHTML = order.map(p => `<div><i style="background:${cols[p]}"></i><span>${p}</span><b>${byParam[p]}</b></div>`).join("") + `<div class="tiny muted" style="display:block">An alert can carry several. Top ${nf(alerts.length)} alerts loaded.</div>`;
+    $("#paramLegend").innerHTML = order.map(p => `<div><i style="background:${cols[p]}"></i><span>${p}</span><b>${byParam[p]}</b></div>`).join("") + `<div class="tiny muted" style="display:block">An alert can carry several.</div>`;
     const outside = h => (wh ? h < wh[0] || h > wh[1] : false);
     mkChart("cHours", { type: "bar", data: { labels: hours.map(h => String(h.hour).padStart(2, "0")), datasets: [{ data: hours.map(h => h.n),
       backgroundColor: hours.map(h => (outside(h.hour) ? t.acc : t.c3)), borderRadius: 6, borderSkipped: false, maxBarThickness: 18 }] },
@@ -284,15 +303,16 @@
   // ---------------------------------------------------------------- Alerts
   function renderAlerts() {
     const rows = filtered();
-    head("Alerts & memos", `Top ${nf(D.alerts.length)} of ${nf(D.kpis.alerts)} alerts, out of ${nf(D.kpis.entries)} entries scored · the full list is in <code>data/output/entries_scored.csv</code>`,
+    const wr = D.web_rows || { min_score: 0 };
+    head("Alerts & memos", `${nf(D.alerts.length)} entries scoring ${wr.min_score}+ (of ${nf(D.kpis.entries)} scored) · ${nf(D.kpis.alerts)} alerts at the pipeline's cut-off ${D.settings.alert_cutoff} · every entry is in <code>data/output/entries_scored.csv</code>`,
       `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="link" id="expCsv"><span data-icon="download"></span>CSV</button><button class="btn acc" id="expXlsx"><span data-icon="download"></span>Excel</button></div>`);
     $("#page-alerts").innerHTML = `
       <div class="card flush">
         <div class="card-head"><div><div class="card-t">${nf(rows.length)} entries match</div><div class="card-s">${nf(rows.filter(isAlert).length)} at or above the alert cut-off · faded rows are below it</div></div></div>
         <div class="filters">
           <label class="ctl">${ICON.search}<input type="text" id="fq" placeholder="Search…" value="${esc(S.q)}"></label>
-          <label class="ctl">Min score <input type="range" id="fmin" min="0" max="100" value="${S.minScore}"><b id="fminv">${S.minScore}</b></label>
-          <label class="ctl">Alert cut-off <input type="range" id="fcut" min="20" max="90" value="${S.cutoff}"><b id="fcutv">${S.cutoff}</b></label>
+          <label class="ctl">Min score <input type="range" id="fmin" min="${wr.min_score}" max="100" value="${Math.max(S.minScore, wr.min_score)}"><b id="fminv">${Math.max(S.minScore, wr.min_score)}</b></label>
+          <label class="ctl">Alert cut-off <input type="range" id="fcut" min="${wr.min_score}" max="99" value="${S.cutoff}"><b id="fcutv">${S.cutoff}</b></label>
           <label class="ctl">Parameter <select id="fparam"><option value="all">All</option><option>P1 Timing</option><option>P2 Amount</option><option>Context</option></select></label>
           <label class="ctl">Source <select id="fsrc"><option value="all">All</option><option value="manual">Manual</option><option value="system">System</option></select></label>
           <label class="ctl">Status <select id="fstat"><option value="all">All</option><option value="open">Open</option><option value="retained">Retained</option><option value="investigate">To investigate</option><option value="dismissed">Dismissed</option></select></label>
@@ -308,7 +328,11 @@
         ${rows.length > S.shown ? `<div class="more" style="padding:0 0 20px"><button class="link" id="more">Show 50 more</button></div>` : ""}
       </div>`;
     $("#fparam").value = S.param; $("#fsrc").value = S.source; $("#fstat").value = S.status;
-    const re = () => { S.shown = 50; renderAlerts(); };
+    const re = () => {                                   // re-draw, then give focus back to the control in use
+      const f = document.activeElement && document.activeElement.id;
+      S.shown = 50; renderAlerts();
+      if (f && $("#" + f) && f !== "fq") $("#" + f).focus();
+    };
     $("#fq").oninput = e => { S.q = e.target.value; clearTimeout(S._t); S._t = setTimeout(() => { re(); const f = $("#fq"); f.focus(); f.setSelectionRange(S.q.length, S.q.length); }, 250); };
     $("#fmin").oninput = e => { $("#fminv").textContent = e.target.value; }; $("#fmin").onchange = e => { S.minScore = +e.target.value; re(); };
     $("#fcut").oninput = e => { $("#fcutv").textContent = e.target.value; }; $("#fcut").onchange = e => { S.cutoff = +e.target.value; store.set("je-audit-cutoff", S.cutoff); updateNavCount(); re(); };
@@ -562,9 +586,10 @@ python -m pytest -q                          # tests</pre></div></div>
   }
 
   // ---------------------------------------------------------------- drawer
-  function openEntry(id) {
+  async function openEntry(id) {
     const a = D.alerts.find(x => x.id === id); if (!a) return;
-    const m = memoOf(a), d = S.decisions[id] || {};
+    if (a.lazy && !memoOf(a)) { try { await loadMemos([id]); } catch (e) { toast("Could not load the memo: " + e.message); } }
+    const m = memoOf(a) || { none: true }, d = S.decisions[id] || {};
     const maxShap = Math.max(...a.shap.map(s => s.shap), 0.01);
     const lvl = m.risk_level === "High" ? "bad" : m.risk_level === "Medium" ? "warn" : "good";
     $("#drawer").innerHTML = `
@@ -581,14 +606,15 @@ python -m pytest -q                          # tests</pre></div></div>
       <div class="sect"><h4>Red flags (rules)</h4><div class="chips">${a.rules.map(ruleTag).join("") || '<span class="card-s">No rule triggered: flagged by the models</span>'}</div></div>
       <div class="sect"><h4>Why the model flagged it · SHAP</h4>${a.shap.map(s => `<div class="shap-row"><span>${esc(s.feature)}</span><span class="track"><i style="width:${s.shap / maxShap * 100}%"></i></span><span class="muted r">+${s.shap}</span></div>`).join("") || '<span class="card-s">No positive SHAP driver</span>'}</div>
       <div class="sect memo"><div class="card-head" style="margin-bottom:10px"><h4 style="margin:0">Audit memo</h4><button class="btn acc" id="memoBtn" ${S.aiOnline ? "" : "disabled title='Start Ollama to rewrite'"}>${ICON.spark}Rewrite with local AI</button></div>
-        <div class="card" style="animation:none">
+        ${m.none ? `<div class="card" style="animation:none"><p class="small">No memo yet: this entry scored ${nf(a.score)}, below the alert cut-off of ${D.settings.alert_cutoff} when the pipeline ran, so no memo was written. ${S.aiOnline ? "Use “Rewrite with local AI” to draft one." : "Start the local AI to draft one, or run the pipeline with a lower cut-off."}</p>
+          <div class="lbl2" style="margin-top:12px">Library guidance for its red flags</div><ul class="small">${recsOf(a).map(r => `<li><b>${esc(r.code)} ${esc(r.anomaly)}:</b> ${esc(r.audit_procedure)}</li>`).join("")}</ul></div>` : `<div class="card" style="animation:none">
           <div class="chips"><span class="badge ${lvl}">${esc(m.risk_level)} risk</span><span class="badge acc">Assertion · ${esc(m.assertion_at_risk)}</span>${(m.library_codes || []).map(c => `<span class="tag gray">Library ${esc(c)}</span>`).join("")}</div>
           <p style="margin-top:12px">${esc(m.why_suspicious)}</p>
           <div class="lbl2" style="margin-top:16px">Evidence to obtain</div><ul class="small">${(m.evidence_to_obtain || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
           <div class="lbl2" style="margin-top:16px">Follow-up procedures</div><ul class="small">${(m.follow_up_procedures || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
           <div class="lbl2" style="margin-top:16px">Possible legitimate explanations</div><ul class="small">${(m.possible_explanations || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
           <p class="small" style="margin-top:14px"><b>Conclusion:</b> ${esc(m.auditor_conclusion || m.conclusion || "")}</p>
-          <div class="tiny muted" style="margin-top:10px">Generated by ${esc(m.source)}. Must be reviewed by the auditor.</div></div></div>
+          <div class="tiny muted" style="margin-top:10px">Generated by ${esc(m.source)}. Must be reviewed by the auditor.</div></div>`}</div>
       <div class="sect"><h4>Auditor decision</h4>
         <div class="dec" id="seg"><button data-v="retained" class="r">Retained</button><button data-v="investigate" class="i">To investigate</button><button data-v="dismissed" class="d">Dismissed</button></div>
         <textarea id="dCom" placeholder="Comment for the working papers…" style="margin-top:12px">${esc(d.comment || "")}</textarea>
@@ -623,9 +649,11 @@ python -m pytest -q                          # tests</pre></div></div>
   document.addEventListener("click", e => { const el = e.target.closest("tr.click, button.li"); if (el && el.dataset.id) openEntry(el.dataset.id); });
 
   // ---------------------------------------------------------------- export
-  function exportFile(kind) {
-    const rows = filtered().map(a => {
-      const m = memoOf(a), d = S.decisions[a.id] || {};
+  async function exportFile(kind) {
+    const list = filtered();
+    try { await loadMemos(list.map(a => a.id)); } catch (e) { toast("Some memos could not be loaded: " + e.message); }
+    const rows = list.map(a => {
+      const m = memoOf(a) || {}, d = S.decisions[a.id] || {};
       return { entry_id: a.id, risk_score: a.score, alert: isAlert(a) ? "yes" : "no", posting_date: a.posting_date, entered_at: a.entered_at, user: a.user,
         source: a.source, nature: a.nature, text: a.text, accounts: a.accounts, amount: a.amount, red_flags: a.rules.join("; "),
         shap_drivers: a.shap.map(s => `${s.feature} (+${s.shap})`).join("; "), risk_level: m.risk_level, why_suspicious: m.why_suspicious,
@@ -683,7 +711,7 @@ python -m pytest -q                          # tests</pre></div></div>
   // ---------------------------------------------------------------- start
   fetch("data/dashboard.json", { cache: "no-cache" }).then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); }).then(data => {
     D = data;
-    S.cutoff = store.get("je-audit-cutoff", D.settings.alert_cutoff);
+    S.cutoff = Math.max(store.get("je-audit-cutoff", D.settings.alert_cutoff), (D.web_rows || {}).min_score || 0);
     $("#periodText").textContent = D.dataset.datacard.period;
     $("#foot").innerHTML = `Data generated ${esc(D.generated_at)} · ${esc(D.dataset.name)} (${esc(D.dataset.license)}) · holidays ${esc(D.dataset.holiday_country)} · memos: ${D.settings.llm_used ? esc(D.settings.llm_model) + " (local)" : "template (no local LLM during the run)"}`;
     updateNavCount(); route();

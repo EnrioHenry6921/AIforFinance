@@ -115,7 +115,10 @@ def test_e2e_dib_labels(tmp, dib):
     assert js["settings"]["label_source"] == "dataset" and js["settings"]["injected"] == 0
     assert js["kpis"]["entries"] == dib[1]["posting_id"].nunique()
     assert js["metrics"]["models"]["Risk score (combined)"]["recall"] is not None
-    assert js["alerts"] and all("memo" in a and a["recommendations"] is not None for a in js["alerts"])
+    full = [a for a in js["alerts"] if "memo" in a]
+    assert full and all(a["recommendations"] for a in full)
+    assert all(a["score"] >= js["web_rows"]["min_score"] or "memo" in a for a in js["alerts"])   # sliders have a real range
+    assert all(a.get("lazy") or a["alert"] == 0 for a in js["alerts"] if "memo" not in a)        # every alert has a memo
     assert (config.OUT_DIR / "JE_audit_alerts.xlsx").exists()
 
 

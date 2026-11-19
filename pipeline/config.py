@@ -95,7 +95,9 @@ HELD_OUT_MARKINGS = ["M7 Shadow bank account", "M8 Cross-linked clearing"]
 # ---------- Scoring ----------
 SYSTEM_WEIGHT = 0.25
 ALERT_CUTOFF = 50
-TOP_N_EXPORT = 400
+TOP_N_EXPORT = 400        # alerts sent to the website in full (memo, lines, recommendations)
+WEB_MIN_SCORE = 30        # every entry at or above this score also goes to the website (compact) so the sliders work
+MEMO_CHUNK = 500          # compact alerts' memos are split in files of this many, loaded on demand
 TEST_SHARE = 0.25              # last 25% of the period = test set (temporal split, like Person 2)
 USE_PERSON2 = True             # add Person 2's classifier to the combined score when it applies
 
