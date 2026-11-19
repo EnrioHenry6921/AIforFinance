@@ -39,14 +39,15 @@
     ["analytics", "Data & EDA", "chart"], ["models", "Models & prediction", "layers"],
     ["genai", "Gen AI & prompts", "spark"], ["method", "Method", "book"],
   ];
-  const P1 = new Set(["Posted on a weekend", "Posted on a public holiday", "Posted in the year-end closing window",
-    "Revenue booked at year end", "Entered long after the posting date", "Entered at night", "Entered on a weekend"]);
-  const paramOf = r => (P1.has(r) ? "P1 Timing" : "P2 Amount");
+  const paramOf = r => (D && D.flag_params && D.flag_params[r]) || "Context";
+  const PCOL = { "P1 Timing": "var(--accent)", "P2 Amount": "var(--p2)", Context: "var(--c2)" };
   const TYPE_LABEL = {
     weekend_posting: "Weekend posting", holiday_posting: "Holiday posting", year_end_revenue: "Year-end revenue",
     night_entry: "Night entry", late_entry: "Late entry (backdating)", round_amount: "Round amount",
-    split_below_threshold: "Split below threshold",
+    split_below_threshold: "Split below threshold", duplicate_manual: "Duplicate manual entry",
   };
+  const typeName = t => TYPE_LABEL[t] || String(t).replace(/^M(\d) /, "M$1 · ");
+  const labelWord = () => (D.settings.label_source === "dataset" ? "labelled" : "demo");
 
   // ---------------------------------------------------------------- helpers
   const $ = s => document.querySelector(s);
@@ -156,7 +157,10 @@
       delay: a.delay, hour: a.entered_at.slice(11, 13), text: a.text, accounts: a.accounts, main_account: code,
       main_account_name: nm.join(" "), amount: a.amount, user: a.user, risk_score: a.score,
       rules: a.rules.join(", ") || "none", shap: a.shap.map(s => `${s.feature} (+${s.shap})`).join("; ") || "none",
-      threshold: D.settings.approval_threshold, perf_mat: pm,
+      threshold: D.settings.approval_threshold, perf_mat: pm, risk_level: a.level,
+      hour_text: D.settings.has_entry_time ? `, at ${a.entered_at.slice(11, 13)}:00` : "",
+      p2: a.p2 === null || a.p2 === undefined ? "not applicable" : `${a.p2}/100`,
+      library: (a.recommendations || []).map(r => `- [${r.code}] ${r.anomaly} (signal: ${r.signal}): risk: ${r.potential_risk} | evidence: ${r.evidence_to_request} | procedure: ${r.audit_procedure}`).join("\n"),
     };
   }
 
@@ -166,28 +170,30 @@
     ${val === "" ? "" : `<div class="val">${val}</div>`}<div class="foot2">${foot}</div></div>`;
   const scoreColor = s => (s >= 75 ? "var(--bad)" : s >= 50 ? "var(--warn)" : "var(--c3)");
   const scoreCell = s => `<div class="score-cell"><span class="n" style="color:${s >= 50 ? scoreColor(s) : "var(--ink-2)"}">${nf(s, 0)}</span><span class="muted tiny"> /100</span><div class="bar"><i style="width:${s}%;background:${scoreColor(s)}"></i></div></div>`;
-  const ruleTag = r => `<span class="tag ${paramOf(r) === "P1 Timing" ? "blue" : "purple"}">${esc(r)}</span>`;
+  const ruleTag = r => `<span class="tag ${{ "P1 Timing": "blue", "P2 Amount": "purple" }[paramOf(r)] || "gray"}">${esc(r)}</span>`;
   const decTag = d => d === "retained" ? '<span class="badge bad">Retained</span>' : d === "dismissed" ? '<span class="badge">Dismissed</span>'
     : d === "investigate" ? '<span class="badge warn">To investigate</span>' : '<span class="badge acc">Open</span>';
-  const markFor = a => { const p = a.rules.length ? paramOf(a.rules[0]) : "P2 Amount"; return `<span class="mark ${p === "P1 Timing" ? "acc" : "p2"}">${ICON[p === "P1 Timing" ? "clock" : "coins"]}</span>`; };
+  const markFor = a => { const p = a.rules.length ? paramOf(a.rules[0]) : "Context"; return `<span class="mark ${p === "P1 Timing" ? "acc" : p === "P2 Amount" ? "p2" : ""}">${ICON[p === "P1 Timing" ? "clock" : p === "P2 Amount" ? "coins" : "layers"]}</span>`; };
+  const totalAlerts = () => (S.cutoff === D.settings.alert_cutoff ? D.kpis.alerts : alertsNow().length);
   const head = (title, sub, actions = "") => { $("#title").textContent = title; $("#subtitle").innerHTML = sub; $("#headActions").innerHTML = actions; icons($("#headActions")); };
 
   // ---------------------------------------------------------------- Overview
   function renderDashboard() {
-    const k = D.kpis, m = D.metrics, comb = m.models["Risk score (combined)"], demo = k.injected > 0;
+    const k = D.kpis, m = D.metrics, comb = m.models["Risk score (combined)"] || {}, demo = k.labelled > 0;
     const alerts = alertsNow(), open = alerts.filter(a => !decisionOf(a.id));
-    head("Overview", `${esc(D.dataset.datacard.period)} · <b style="color:var(--ink)">${nf(open.length)}</b> alert${open.length === 1 ? "" : "s"} need review`,
+    head("Overview", `${esc(D.dataset.datacard.period)} · <b style="color:var(--ink)">${nf(totalAlerts())}</b> alerts · top ${nf(alerts.length)} loaded here`,
       `<a class="link" href="#alerts"><span data-icon="alert"></span>Start triage</a>`);
     const types = m.by_type || [];
     const heldN = types.filter(t => t.held_out).reduce((s, t) => s + t.n, 0);
     const heldXgb = heldN ? types.filter(t => t.held_out).reduce((s, t) => s + t.xgboost * t.n, 0) / heldN : 0;
-    const tabVal = { entries: [nf(k.entries), "entries scored, 100% of the ledger"], alerts: [nf(alerts.length), `alerts at cut-off ${S.cutoff}`], amount: [eurShort(k.amount_tested), "posted across both years"] }[S.tab];
-    const hours = D.charts.hours, night = D.charts.flags_all["Entered at night"] || 0;
+    const tabVal = { entries: [nf(k.entries), "entries scored, 100% of the ledger"], alerts: [nf(k.alerts), `alerts at cut-off ${D.settings.alert_cutoff}`], amount: [eurShort(k.amount_tested), "posted in the period"] }[S.tab];
+    const hours = D.charts.hours, night = D.charts.flags_all["Entered outside working hours"] || 0;
+    const wh = D.settings.working_hours;
 
     $("#page-dashboard").innerHTML = `
       <div class="grid g-wide">
         <div class="card" style="--i:0">
-          <div class="card-head"><div><div class="card-t">Needs review</div><div class="card-v">${nf(open.length)}</div><div class="card-s">Highest risk first. Open one to read the memo and record your decision.</div></div>
+          <div class="card-head"><div><div class="card-t">Needs review</div><div class="card-v">${nf(open.length)}</div><div class="card-s">Highest-risk alerts still open. Open one to read the memo and record your decision.</div></div>
             <span class="badge ${open.length ? "warn" : "good"}">${open.length ? nf(alerts.length - open.length) + " reviewed" : "All reviewed"}</span></div>
           <div class="list-r">${open.slice(0, 6).map(a => `
             <button class="li" data-id="${esc(a.id)}">${markFor(a)}
@@ -198,20 +204,20 @@
         </div>
         <div class="card" style="--i:1">
           <div class="card-t">Detection rate</div>
-          <div class="big-n" style="margin-top:6px">${demo ? pct(comb.recall) : "n/a"}</div>
-          <div class="card-s">${demo ? `${k.found} of ${k.injected} demo anomalies found` : "No demo anomalies in this run"}</div>
+          <div class="big-n" style="margin-top:6px">${demo && comb.recall != null ? pct(comb.recall) : "n/a"}</div>
+          <div class="card-s">${demo ? `on the unseen test period · ${nf(k.found)} of ${nf(k.labelled)} ${labelWord()} anomalies alerted overall` : "No labelled anomalies in this run"}</div>
           <div class="hb" style="margin-top:20px">${types.map(t => `
-            <div class="r"><span>${esc(TYPE_LABEL[t.type] || t.type)}${t.held_out ? ' <span class="badge acc" style="height:20px;font-size:11px;margin-left:4px">unseen by ML</span>' : ""}</span><b>${pct(t.combined)}<small>${t.n}</small></b>
+            <div class="r"><span>${esc(typeName(t.type))}${t.held_out ? ' <span class="badge acc" style="height:20px;font-size:11px;margin-left:4px">unseen by ML</span>' : ""}</span><b>${pct(t.combined)}<small>${t.n}</small></b>
               <div class="t"><i class="${t.held_out ? "acc" : ""}" style="width:${t.combined * 100}%"></i></div></div>`).join("")}
           </div>
-          ${demo ? `<div class="note" style="margin-top:18px">XGBoost alone catches <b>${pct(heldXgb)}</b> of the types it never saw. The rules keep them in.</div>` : ""}
+          ${demo && heldN ? `<div class="note" style="margin-top:18px">XGBoost alone catches <b>${pct(heldXgb)}</b> of the types it never saw: it only finds what it was taught.${m.recall_seen_types ? ` On the types it was taught, the combined score catches <b>${pct(m.recall_seen_types["Risk score (combined)"])}</b>.` : ""}</div>` : ""}
         </div>
       </div>
 
       <div class="grid g4">
         ${stat("Entries tested", nf(k.entries), `100% of the ledger · ${nf(k.manual)} manual`, "doc", true, 2)}
-        ${stat("Alerts to review", nf(alerts.length), `<span class="badge warn">${pct(alerts.length / k.entries, 2)}</span> of all entries`, "alert", false, 3)}
-        ${stat("Real entries flagged", nf(alerts.filter(a => !a.injected).length), "not planted, worth a look", "target", false, 4)}
+        ${stat("Alerts to review", nf(totalAlerts()), `<span class="badge warn">${pct(totalAlerts() / k.entries, 2)}</span> of all entries · ${nf(k.high)} high`, "alert", false, 3)}
+        ${stat(demo ? "Unlabelled entries flagged" : "Entries flagged", nf(k.real_alerts), demo ? "not in the labels, worth a look" : "worth a look", "target", false, 4)}
         ${stat("Amount tested", eurShort(k.amount_tested), `${D.charts.monthly.length} months · ${D.dataset.datacard.users} users`, "wallet", false, 5)}
       </div>
 
@@ -231,8 +237,8 @@
 
       <div class="grid g-wide even">
         <div class="card" style="--i:8">
-          <div class="card-head"><div><div class="card-t">Entry times</div><div class="card-v">${nf(night)}</div><div class="card-s">entries typed in at night (20:00–06:00) · log scale</div></div>
-            <div class="legend" style="margin:0"><span><i style="background:var(--c3)"></i>Working hours</span><span><i style="background:var(--accent)"></i>Night</span></div></div>
+          <div class="card-head"><div><div class="card-t">Entry times</div><div class="card-v">${nf(night)}</div><div class="card-s">${wh ? `entered outside the ledger's working day (${String(wh[0]).padStart(2, "0")}:00–${String(wh[1]).padStart(2, "0")}:59)` : "no entry time in this file"} · log scale</div></div>
+            <div class="legend" style="margin:0"><span><i style="background:var(--c3)"></i>Working hours</span><span><i style="background:var(--accent)"></i>Outside</span></div></div>
           <div class="chart-box"><canvas id="cHours"></canvas></div>
         </div>
         <div class="card" style="--i:9">
@@ -252,14 +258,14 @@
         plugins: { tooltip: { callbacks: { label: c => " " + (S.tab === "amount" ? eur(c.raw, 0) : nf(c.raw)) } } },
         scales: axes(t, { y: { ticks: { maxTicksLimit: 5, callback: v => (S.tab === "amount" ? eurShort(v) : nf(v)) } } }) } });
     const byParam = {}; alerts.forEach(a => new Set(a.rules.length ? a.rules.map(paramOf) : ["ML only"]).forEach(p => (byParam[p] = (byParam[p] || 0) + 1)));
-    const order = ["P1 Timing", "P2 Amount", "ML only"].filter(p => byParam[p]);
-    const cols = { "P1 Timing": t.acc, "P2 Amount": t.p2, "ML only": t.c3 };
+    const order = ["P1 Timing", "P2 Amount", "Context", "ML only"].filter(p => byParam[p]);
+    const cols = { "P1 Timing": t.acc, "P2 Amount": t.p2, Context: t.c2, "ML only": t.c3 };
     mkChart("cParam", { type: "doughnut", data: { labels: order, datasets: [{ data: order.map(p => byParam[p]), backgroundColor: order.map(p => cols[p]), borderWidth: 0, spacing: 3, borderRadius: 6 }] },
       options: { responsive: true, maintainAspectRatio: false, cutout: "74%" } });
-    $("#paramLegend").innerHTML = order.map(p => `<div><i style="background:${cols[p]}"></i><span>${p}</span><b>${byParam[p]}</b></div>`).join("") + '<div class="tiny muted" style="display:block">An alert can carry both.</div>';
-    const [n0, n1] = D.settings.night_hours;
+    $("#paramLegend").innerHTML = order.map(p => `<div><i style="background:${cols[p]}"></i><span>${p}</span><b>${byParam[p]}</b></div>`).join("") + `<div class="tiny muted" style="display:block">An alert can carry several. Top ${nf(alerts.length)} alerts loaded.</div>`;
+    const outside = h => (wh ? h < wh[0] || h > wh[1] : false);
     mkChart("cHours", { type: "bar", data: { labels: hours.map(h => String(h.hour).padStart(2, "0")), datasets: [{ data: hours.map(h => h.n),
-      backgroundColor: hours.map(h => (h.hour >= n0 || h.hour < n1 ? t.acc : t.c3)), borderRadius: 6, borderSkipped: false, maxBarThickness: 18 }] },
+      backgroundColor: hours.map(h => (outside(h.hour) ? t.acc : t.c3)), borderRadius: 6, borderSkipped: false, maxBarThickness: 18 }] },
       options: { responsive: true, maintainAspectRatio: false, plugins: { tooltip: { callbacks: { title: c => c[0].label + ":00", label: c => " " + nf(c.raw) + " entries" } } },
         scales: axes(t, { x: { ticks: { maxTicksLimit: 12 } }, y: { type: "logarithmic", ticks: { callback: v => ([1, 10, 100, 1000, 10000].includes(v) ? nf(v) : "") } } }) } });
   }
@@ -278,8 +284,8 @@
   // ---------------------------------------------------------------- Alerts
   function renderAlerts() {
     const rows = filtered();
-    head("Alerts & memos", `Top ${nf(D.alerts.length)} entries by risk, out of ${nf(D.kpis.entries)} scored · click a row to open its memo`,
-      `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="link" id="expCsv"><span data-icon="download"></span>CSV</button><button class="btn acc" id="expXlsx"><span data-icon="download"></span>Excel for working papers</button></div>`);
+    head("Alerts & memos", `Top ${nf(D.alerts.length)} of ${nf(D.kpis.alerts)} alerts, out of ${nf(D.kpis.entries)} entries scored · the full list is in <code>data/output/entries_scored.csv</code>`,
+      `<div style="display:flex;gap:8px;flex-wrap:wrap"><button class="link" id="expCsv"><span data-icon="download"></span>CSV</button><button class="btn acc" id="expXlsx"><span data-icon="download"></span>Excel</button></div>`);
     $("#page-alerts").innerHTML = `
       <div class="card flush">
         <div class="card-head"><div><div class="card-t">${nf(rows.length)} entries match</div><div class="card-s">${nf(rows.filter(isAlert).length)} at or above the alert cut-off · faded rows are below it</div></div></div>
@@ -287,14 +293,14 @@
           <label class="ctl">${ICON.search}<input type="text" id="fq" placeholder="Search…" value="${esc(S.q)}"></label>
           <label class="ctl">Min score <input type="range" id="fmin" min="0" max="100" value="${S.minScore}"><b id="fminv">${S.minScore}</b></label>
           <label class="ctl">Alert cut-off <input type="range" id="fcut" min="20" max="90" value="${S.cutoff}"><b id="fcutv">${S.cutoff}</b></label>
-          <label class="ctl">Parameter <select id="fparam"><option value="all">All</option><option>P1 Timing</option><option>P2 Amount</option></select></label>
+          <label class="ctl">Parameter <select id="fparam"><option value="all">All</option><option>P1 Timing</option><option>P2 Amount</option><option>Context</option></select></label>
           <label class="ctl">Source <select id="fsrc"><option value="all">All</option><option value="manual">Manual</option><option value="system">System</option></select></label>
           <label class="ctl">Status <select id="fstat"><option value="all">All</option><option value="open">Open</option><option value="retained">Retained</option><option value="investigate">To investigate</option><option value="dismissed">Dismissed</option></select></label>
         </div>
         <div class="table-wrap"><table><thead><tr><th>Risk</th><th>Entry</th><th>Posted</th><th>User</th><th class="r">Amount</th><th>Red flags</th><th>Status</th></tr></thead><tbody>
           ${rows.slice(0, S.shown).map(a => `<tr class="click" data-id="${esc(a.id)}" style="${isAlert(a) ? "" : "opacity:.55"}">
             <td>${scoreCell(a.score)}</td>
-            <td><div class="lt">${esc(a.text)}</div><div class="ls">${esc(a.id)} · ${esc(a.source)} · ${esc(a.nature)}${a.injected ? ' · <span class="orange">demo</span>' : ""}</div></td>
+            <td><div class="lt">${esc(a.text)}</div><div class="ls">${esc(a.id)} · ${esc(a.source)} · ${esc(a.nature)}${a.injected ? ` · <span class="orange">${labelWord()}</span>` : ""}</div></td>
             <td>${dmy(a.posting_date)}</td><td>${esc(a.user)}</td><td class="r bold">${eur(a.amount)}</td>
             <td><div class="chips">${a.rules.slice(0, 2).map(ruleTag).join("")}${a.rules.length > 2 ? `<span class="tag gray">+${a.rules.length - 2}</span>` : ""}${!a.rules.length ? '<span class="tag gray">Models only</span>' : ""}</div></td>
             <td>${decTag(decisionOf(a.id))}</td></tr>`).join("") || `<tr><td colspan="7" class="empty">No entry matches these filters.</td></tr>`}
@@ -321,9 +327,9 @@
     const fl = D.charts.flags_all, flMax = Math.max(...Object.values(fl));
     $("#page-analytics").innerHTML = `
       <div class="grid g4">
-        ${stat("Ledger lines", nf(c.lines), "raw ledger, before demo anomalies", "doc", true, 0)}
+        ${stat("Ledger lines", nf(c.lines), `${esc(c.file || "")}`, "doc", true, 0)}
         ${stat("Entries", nf(c.entries), `${nf(c.manual_entries)} manual entries`, "layers", false, 1)}
-        ${stat("Users · accounts", `${c.users} · ${c.accounts}`, "SKR03 chart of accounts", "user", false, 2)}
+        ${stat("Users · accounts", `${c.users} · ${c.accounts}`, `${esc(c.chart_of_accounts)} chart of accounts`, "user", false, 2)}
         ${stat("Unbalanced · missing", `${c.unbalanced_entries} · ${c.missing_values}`, '<span class="badge good">clean</span> consistency checks', "shield", false, 3)}
       </div>
       <div class="grid g2">
@@ -337,11 +343,13 @@
           </tbody></table></div></div>
         <div class="card" style="--i:5"><div class="card-t">Do we trust the data?</div><div class="card-s">What the EDA tells us before we model</div>
           <div class="list-r" style="margin-top:14px">
-            ${[["good", "check", "Clean and balanced", "Every entry balances, nothing is missing. So we inject labelled anomalies to test the system."],
+            ${[[c.unbalanced_entries ? "warn" : "good", "check", c.unbalanced_entries ? "Some entries do not balance" : "Clean and balanced",
+                 c.labelled_entries ? `${nf(c.labelled_entries)} entries carry the dataset's own anomaly labels (${pct(c.labelled_entries / c.entries, 2)}). The generator's helper columns are dropped so the models cannot cheat.`
+                   : "Every entry balances. The file has no labels, so we inject labelled demo anomalies to test the system."],
                ["p2", "coins", "Benford fails for the whole ledger", `MAD ${b.mad}. Fixed product prices drive the first digits, so Benford is context per user, not an alarm.`],
-               ["acc", "calendar", "System postings ignore holidays", `${nf(fl["Posted on a public holiday"])} entries on ${esc(D.dataset.holiday_country)} holidays: a sign the ledger is generated. Timing flags count fully only for manual entries.`],
-               ["", "doc", "A German company", "SKR03 accounts, 19% VAT. We apply NEP 240 / ISA 240; the holiday country is a setting."],
-               ["bad", "x", "No supplier or invoice number", "Duplicate payments cannot be tested reliably."]]
+               ["acc", "calendar", "Weekends and holidays are normal here", `${nf(fl["Entered on a weekend"] || 0)} entries were typed in on a weekend and ${nf(fl["Posted on a public holiday"] || 0)} posted on ${esc(D.dataset.holiday_country)} holidays. A timing flag alone is weak evidence; timing flags count fully only for manual entries.`],
+               ["", "doc", c.chart_of_accounts === "PCG" ? "A French company" : "A German company", `${esc(c.chart_of_accounts)} accounts. We apply NEP 240 / ISA 240; the holiday country follows the chart (${esc(D.dataset.holiday_country)}).`],
+               [c.has_entry_time ? "good" : "bad", "clock", c.has_entry_time ? "Entry times are available" : "No entry time", c.has_entry_time ? `The working day is learned from the data (${(D.settings.working_hours || []).join("–")}h); off-hours and per-user hour checks are on.` : "Off-hours and per-user hour checks are switched off for this file."]]
               .map(([cl, ic, t, s]) => `<div class="li"><span class="mark ${cl}">${ICON[ic]}</span><div><div class="lt">${t}</div><div class="ls">${s}</div></div><span></span></div>`).join("")}
           </div></div>
       </div>
@@ -355,13 +363,13 @@
           </tbody></table></div></div>
       </div>
       <div class="grid g3">
-        <div class="card" style="--i:8"><div class="card-t">Postings by weekday</div><div class="card-s">Weekend postings are rare: a useful red flag</div><div class="chart-box sm" style="margin-top:12px"><canvas id="cWeek"></canvas></div></div>
+        <div class="card" style="--i:8"><div class="card-t">Postings by weekday</div><div class="card-s">By posting date</div><div class="chart-box sm" style="margin-top:12px"><canvas id="cWeek"></canvas></div></div>
         <div class="card" style="--i:9"><div class="card-t">Risk score distribution</div><div class="card-s">All ${nf(D.kpis.entries)} entries · log scale</div><div class="chart-box sm" style="margin-top:12px"><canvas id="cHist"></canvas></div></div>
         <div class="card" style="--i:10"><div class="card-t">Amount posted per month</div><div class="card-s">Total debit of all entries · December highlighted</div><div class="chart-box sm" style="margin-top:12px"><canvas id="cAmt"></canvas></div></div>
       </div>
       <div class="card" style="--i:11"><div class="card-head"><div><div class="card-t">Red flags in the whole ledger</div><div class="card-s">Entries with each flag before weighting</div></div>
-        <div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>P1 Timing</span><span><i style="background:var(--p2)"></i>P2 Amount</span></div></div>
-        <div class="hb">${Object.entries(fl).sort((x, y) => y[1] - x[1]).map(([f, n]) => `<div class="r"><span>${esc(f)}</span><b>${nf(n)}</b><div class="t"><i style="width:${Math.max(1.5, Math.log10(n + 1) / Math.log10(flMax + 1) * 100)}%;background:${paramOf(f) === "P1 Timing" ? "var(--accent)" : "var(--p2)"}"></i></div></div>`).join("")}</div>
+        <div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>P1 Timing</span><span><i style="background:var(--p2)"></i>P2 Amount</span><span><i style="background:var(--c2)"></i>Context</span></div></div>
+        <div class="hb">${Object.entries(fl).sort((x, y) => y[1] - x[1]).map(([f, n]) => `<div class="r"><span>${esc(f)}</span><b>${nf(n)}</b><div class="t"><i style="width:${Math.max(1.5, Math.log10(n + 1) / Math.log10(flMax + 1) * 100)}%;background:${PCOL[paramOf(f)]}"></i></div></div>`).join("")}</div>
         <div class="tiny muted" style="margin-top:12px">Bar length on a log scale so rare flags stay visible.</div></div>`;
     const t = chartTheme();
     mkChart("cBenford", { type: "bar", data: { labels: b.overall.map(x => x.digit), datasets: [
@@ -382,58 +390,69 @@
 
   // ---------------------------------------------------------------- Models & prediction
   function renderModels() {
-    const m = D.metrics, f = D.forecast;
+    const m = D.metrics, f = D.forecast, p2r = m.person2_reported;
     head("Models & prediction", esc(m.split));
-    if (!m.by_type.length) {
-      $("#page-models").innerHTML = `<div class="card"><div class="card-t">No labelled anomalies in this run</div><p class="card-s" style="margin-top:8px">Scored with rules + Isolation Forest only. Run <code>python -m pipeline.run --inject 42</code> to train and evaluate XGBoost and run the circularity test.</p></div>`;
+    const fcCard = () => {
+      const flagged = (f.months || []).filter(x => x.flag);
+      return `<div class="card" style="--i:6"><div class="card-head"><div><div class="card-t">Predictive analytics · expected vs actual revenue</div>
+          <div class="card-v">${flagged.length ? `${flagged.length} month${flagged.length > 1 ? "s" : ""} outside the band` : "On expectation"}</div><div class="card-s">${esc(f.method || "")} · band ±${f.band_pct ?? "-"}%</div></div>
+          <div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>Actual</span><span><i style="background:var(--c2)"></i>Expected</span><span><i style="background:var(--bad)"></i>Outside band</span></div></div>
+          <div class="chart-box lg"><canvas id="cFc"></canvas></div>
+          <div class="chips" style="margin-top:12px">${flagged.map(x => `<span class="badge bad">${monLabel(x.month)}: ${eurShort(x.actual)} vs ${eurShort(x.expected)} expected</span>`).join("")}</div></div>`;
+    };
+    const recipe = `<div class="card" style="--i:9"><div class="card-t">Scoring recipe</div><div class="card-s">Transparent and adjustable in <code>pipeline/config.py</code> and <code>pipeline/model.py</code></div>
+        <div class="grid g4" style="margin:16px 0 0">
+          <div class="inner"><div class="lbl2">1 · Rules (points)</div><div class="chips">${Object.entries(m.rules || {}).map(([r, w]) => `<span class="tag gray">${esc(r.replace(/_/g, " "))} · ${w}</span>`).join("")}</div>
+            <div class="card-s" style="margin-top:10px">Manual entries count 100%, system entries ${nf((D.settings.system_weight ?? .25) * 100)}%; recurring manual entries (rent, salaries) 30%.</div></div>
+          <div class="inner"><div class="lbl2">2 · Unsupervised</div><div class="card-s">Isolation Forest, LOF and an autoencoder, no labels. The autoencoder or LOF replaces Isolation Forest only with a clear gain (+0.02 PR-AUC). Used here: <b>${esc(m.unsupervised_choice)}</b>. Only the top 10% of outliers add to the score.</div></div>
+          <div class="inner"><div class="lbl2">3 · XGBoost + SHAP</div><div class="card-s">Predicts P(anomaly) from the red flags, amounts and who entered it; the cut is tuned on validation rows${m.xgb_threshold ? ` (${m.xgb_threshold.final})` : ""}. SHAP explains each entry. Generator columns and <code>is_manual</code> are excluded.</div></div>
+          <div class="inner"><div class="lbl2">4 · Person 2's model</div><div class="card-s">${esc(m.person2_note || "not used")}. HistGradientBoosting on Person 2's 12 features, exported to JSON so it runs on any scikit-learn version.</div></div>
+        </div>
+        <div class="card-s" style="margin-top:14px">Risk = 100 × [1 − (1 − rules) × (1 − ${m.weights.xgb} × XGB) × (1 − ${m.weights.person2} × Person 2) × (1 − ${m.weights.unsupervised} × outlier)] · each model's own cut lands at 54 · alert at ≥ ${D.settings.alert_cutoff}</div></div>`;
+    if (!m.by_type || !m.by_type.length) {
+      $("#page-models").innerHTML = `<div class="card"><div class="card-t">No labelled anomalies in this run</div><p class="card-s" style="margin-top:8px">Scored with rules, the unsupervised detectors${m.person2_note && !/not|missing|off/.test(m.person2_note) ? " and Person 2's model" : ""}. Run <code>python -m pipeline.run --inject 42</code> to add labelled demo anomalies, train XGBoost and run the circularity test.</p></div><div class="grid g-wide">${fcCard()}<div></div></div>${recipe}`;
+      drawForecast(f);
       return;
     }
     const models = Object.entries(m.models);
     const comb = m.models["Risk score (combined)"];
-    const kk = Object.keys(models[0][1]).find(x => x.startsWith("precision_at_"));
-    const heat = v => (v >= .8 ? "good" : v >= .4 ? "warn" : "bad");
-    const flagged = (f.months || []).filter(x => x.flag);
-    const best = models.reduce((a, b) => ((b[1].pr_auc || 0) > (a[1].pr_auc || 0) ? b : a))[0];
-    const tx = m.xgb_test_2024_and_held_out;
+    const heat = v => (v === null || v === undefined ? "" : v >= .8 ? "good" : v >= .4 ? "warn" : "bad");
+    const best = models.filter(([n]) => !n.includes("in-sample")).reduce((a, b) => ((b[1].pr_auc || 0) > (a[1].pr_auc || 0) ? b : a))[0];
+    const uName = { iforest: "IForest", lof: "LOF", autoencoder: "AE" }[m.unsupervised_choice] || "IForest";
+    const cols = [["rules", "Rules"], [m.unsupervised_choice || "iforest", uName], ["xgboost", "XGB"], ["combined", "Score"]];
+    if (m.by_type.some(t => t.person2 !== null && t.person2 !== undefined)) cols.splice(3, 0, ["person2", "P2*"]);
+    const p2t = p2r && p2r.xgboost_threshold_0_5;
     $("#page-models").innerHTML = `
       <div class="grid g4">
-        ${stat("Best ranking · PR-AUC", comb.pr_auc, "combined risk score", "target", true, 0)}
-        ${stat(`Precision in the top ${kk.split("_").pop()}`, pct(comb[kk]), "first alerts that are planted anomalies", "layers", false, 1)}
-        ${stat("Recall", pct(comb.recall), "demo anomalies alerted", "check", false, 2)}
-        ${stat("XGBoost on unseen data", pct(tx.recall), "recall on later year + held-out types", "brain", false, 3)}
+        ${stat("Ranking · PR-AUC", comb.pr_auc ?? "-", "combined score, unseen test period", "target", true, 0)}
+        ${stat("Precision · recall", `${pct(comb.precision)} · ${pct(comb.recall)}`, `${nf(comb.alerts)} alerts on ${nf(m.eval_rows)} test entries`, "layers", false, 1)}
+        ${stat("Recall on taught types", m.recall_seen_types ? pct(m.recall_seen_types["Risk score (combined)"]) : "n/a", `held-out types excluded: ${esc((m.held_out_types || []).join(", "))}`, "check", false, 2)}
+        ${stat("Precision in the top k", pct(comb.precision_at_k), `k = ${nf(m.eval_positives)} (number of test anomalies)`, "brain", false, 3)}
       </div>
       <div class="grid g2 tables">
-        <div class="card flush" style="--i:4"><div class="card-head"><div><div class="card-t">Model comparison</div><div class="card-s">Against the labelled demo anomalies</div></div></div>
-          <div class="table-wrap"><table class="matrix"><thead><tr><th>Layer</th><th class="r">Alerts</th><th class="r">Precision</th><th class="r">Recall</th><th class="r">F1</th><th class="r" title="Precision in the top ${kk.split("_").pop()}">Top ${kk.split("_").pop()}</th><th class="r">PR-AUC</th></tr></thead><tbody>
-          ${models.map(([n, v]) => `<tr><td><b>${esc(n.replace(" (combined)", ""))}</b>${n === best ? '<div><span class="badge acc" style="height:20px;margin-top:4px">best ranking</span></div>' : ""}</td><td class="r">${nf(v.alerts)}</td><td class="r">${pct(v.precision)}</td><td class="r">${pct(v.recall)}</td><td class="r">${v.f1 ?? "-"}</td><td class="r">${pct(v[kk])}</td><td class="r">${v.pr_auc ?? "-"}</td></tr>`).join("")}
-          <tr><td><b>XGBoost, test set</b></td><td class="r">${nf(tx.alerts)}</td><td class="r">${pct(tx.precision)}</td><td class="r">${pct(tx.recall)}</td><td class="r">${tx.f1 ?? "-"}</td><td class="r">-</td><td class="r">${tx.pr_auc}</td></tr>
+        <div class="card flush" style="--i:4"><div class="card-head"><div><div class="card-t">Model comparison</div><div class="card-s">${nf(m.eval_rows)} entries the supervised model never trained on · ${nf(m.eval_positives)} ${labelWord()} anomalies</div></div></div>
+          <div class="table-wrap"><table class="matrix"><thead><tr><th>Layer</th><th class="r">Alerts</th><th class="r">Precision</th><th class="r">Recall</th><th class="r">F1</th><th class="r" title="Precision in the top k">Top k</th><th class="r">PR-AUC</th></tr></thead><tbody>
+          ${models.map(([n, v]) => `<tr><td><b>${esc(n.replace(" (combined)", ""))}</b>${n === best ? '<div><span class="badge acc" style="height:20px;margin-top:4px">best ranking</span></div>' : ""}</td><td class="r">${nf(v.alerts)}</td><td class="r">${pct(v.precision)}</td><td class="r">${pct(v.recall)}</td><td class="r">${v.f1 ?? "-"}</td><td class="r">${pct(v.precision_at_k)}</td><td class="r">${v.pr_auc ?? "-"}</td></tr>`).join("")}
+          ${p2t ? `<tr><td><b>Person 2 model, own temporal test</b><div class="tiny muted">from model_metrics.json · test after ${esc(p2r.temporal_train_cutoff)}</div></td><td class="r">${nf(p2t.predicted_anomalies)}</td><td class="r">${pct(p2t.precision)}</td><td class="r">${pct(p2t.recall)}</td><td class="r">${nf(p2t.f1_score, 3)}</td><td class="r">-</td><td class="r">${nf(p2t.average_precision, 3)}</td></tr>` : ""}
           </tbody></table></div>
           <div style="padding:16px 22px 22px;display:grid;gap:10px">
-            <div class="note warn"><b>Why not the rules alone?</b> They score high partly because we planted exactly the patterns they look for. The combined score <b>ranks</b> best, which matters when the auditor works down the list, and it still catches patterns nobody wrote a rule for.</div>
-            <div class="note"><b>Precision</b> counts only planted anomalies as correct, so real entries worth reviewing lower it.</div></div></div>
+            ${models.some(([n]) => n.includes("in-sample")) ? `<div class="note warn"><b>Person 2's model is in-sample here:</b> it was trained on every label of this ledger, so its row above flatters it. Its own temporal test is the fair comparison, and the combined score is evaluated without it.</div>` : ""}
+            <div class="note"><b>Why are the rules weak here?</b> In the DIB ledger ${nf(D.kpis.labelled)} entries are labelled, but thousands of normal entries share the same pattern (late, weekend, off-hours). The labels are a sample, so a rule alone cannot be precise; the models learn which ones were picked.</div></div></div>
         <div class="card flush" style="--i:5"><div class="card-head"><div><div class="card-t">Circularity test</div><div class="card-s">Recall by anomaly type · <span class="badge acc" style="height:20px">unseen</span> = never shown to XGBoost</div></div></div>
-          <div class="table-wrap"><table class="matrix"><thead><tr><th>Type</th><th class="r">n</th><th>Rules</th><th>IForest</th><th>XGB</th><th>Score</th></tr></thead><tbody>
-          ${m.by_type.map(t => `<tr><td>${esc(TYPE_LABEL[t.type] || t.type)}${t.held_out ? ' <span class="badge acc" style="height:20px">unseen</span>' : ""}</td><td class="r">${t.n}</td>${["rules", "iforest", "xgboost", "combined"].map(k => `<td class="c"><span class="badge ${heat(t[k])}">${pct(t[k])}</span></td>`).join("")}</tr>`).join("")}
+          <div class="table-wrap"><table class="matrix"><thead><tr><th>Type</th><th class="r">n</th>${cols.map(([, l]) => `<th>${l}</th>`).join("")}</tr></thead><tbody>
+          ${m.by_type.map(t => `<tr><td>${esc(typeName(t.type))}${t.held_out ? ' <span class="badge acc" style="height:20px">unseen</span>' : ""}</td><td class="r">${t.n}</td>${cols.map(([k]) => `<td class="c"><span class="badge ${heat(t[k])}">${pct(t[k])}</span></td>`).join("")}</tr>`).join("")}
           </tbody></table></div>
-          <div style="padding:16px 22px 22px"><div class="note warn">XGBoost scores 0% on the unseen types: it only finds what it was taught. The rules and the combined score still catch them, so the ML never works alone.</div></div></div>
+          <div style="padding:16px 22px 22px;display:grid;gap:10px"><div class="note warn">XGBoost misses the types it never saw: it only finds what it was taught. That is why it never works alone, and why new patterns need new rules.</div>${cols.some(c => c[0] === "person2") ? '<div class="tiny muted">* Person 2, in-sample (saw every type in training).</div>' : ""}</div></div>
       </div>
       <div class="grid g-wide">
-        <div class="card" style="--i:6"><div class="card-head"><div><div class="card-t">Predictive analytics · expected vs actual revenue</div>
-          <div class="card-v">${flagged.length ? `${flagged.length} month${flagged.length > 1 ? "s" : ""} outside the band` : "On expectation"}</div><div class="card-s">${esc(f.method || "")} · band ±${f.band_pct}%</div></div>
-          <div class="legend" style="margin:0"><span><i style="background:var(--accent)"></i>Actual</span><span><i style="background:var(--c2)"></i>Expected</span><span><i style="background:var(--bad)"></i>Outside band</span></div></div>
-          <div class="chart-box lg"><canvas id="cFc"></canvas></div>
-          <div class="chips" style="margin-top:12px">${flagged.map(x => `<span class="badge bad">${monLabel(x.month)}: ${eurShort(x.actual)} vs ${eurShort(x.expected)} expected</span>`).join("")}</div></div>
+        ${fcCard()}
         <div class="card" style="--i:7"><div class="card-t">What drives XGBoost</div><div class="card-s">Feature importance (gain)</div>
           <div class="hb" style="margin-top:16px">${m.feature_importance.slice(0, 9).map((x, i) => `<div class="r"><span>${esc(x.feature)}</span><b>${nf(x.importance * 100, 1)}%</b><div class="t"><i class="${i === 0 ? "acc" : ""}" style="width:${x.importance / m.feature_importance[0].importance * 100}%"></i></div></div>`).join("")}</div></div>
       </div>
-      <div class="card" style="--i:8"><div class="card-t">Scoring recipe</div><div class="card-s">Transparent and adjustable in <code>pipeline/config.py</code></div>
-        <div class="grid g3" style="margin:16px 0 0">
-          <div class="inner"><div class="lbl2">1 · Rules (points)</div><div class="chips">${Object.entries(m.rules).map(([r, w]) => `<span class="tag gray">${esc(r.replace(/_/g, " "))} · ${w}</span>`).join("")}</div>
-            <div class="card-s" style="margin-top:10px">Manual entries count 100%, system entries 25%; recurring manual entries (rent, salaries) 30%.</div></div>
-          <div class="inner"><div class="lbl2">2 · Isolation Forest</div><div class="card-s">300 trees, no labels. Only the top 10% of outliers add to the score (max ${m.weights.iforest * 100}%).</div></div>
-          <div class="inner"><div class="lbl2">3 · XGBoost + SHAP</div><div class="card-s">Predicts P(anomaly); SHAP explains each entry. <code>is_manual</code> is excluded: it would leak the label.</div></div>
-        </div>
-        <div class="card-s" style="margin-top:14px">Risk = 100 × [1 − (1 − rules) × (1 − ${m.weights.xgb} × XGB) × (1 − ${m.weights.iforest} × outlier)] · alert at ≥ ${D.settings.alert_cutoff}</div></div>`;
+      ${recipe}`;
+    drawForecast(f);
+  }
+  function drawForecast(f) {
     const t = chartTheme();
     const hist = f.history || [], mon = f.months || [], pad = hist.map(() => null);
     mkChart("cFc", { type: "line", data: { labels: [...hist, ...mon].map(x => monLabel(x.month)), datasets: [
@@ -467,6 +486,13 @@
             <label class="ctl">Memo language <select id="langIn"><option>English</option><option>French</option></select></label></div>
           <div class="note" style="margin-top:14px">To use it from this page: install Ollama, run <code>ollama pull llama3</code>, then <code>OLLAMA_ORIGINS="*" ollama serve</code>.</div></div>
       </div>
+      <div class="grid g2">
+        <div class="card" style="--i:2"><div class="card-t">Alerts by theme</div><div class="card-s">All ${nf(D.kpis.alerts)} alerts, grouped by their main red flag</div>
+          <div class="hb" style="margin-top:16px">${Object.entries(D.themes || {}).map(([k, n], i) => `<div class="r"><span>${esc(k)}</span><b>${nf(n)}</b><div class="t"><i class="${i === 0 ? "acc" : ""}" style="width:${n / Math.max(1, D.kpis.alerts) * 100}%"></i></div></div>`).join("")}</div></div>
+        <div class="card" style="--i:3"><div class="card-t">Ask the alerts</div><div class="card-s">Question in plain language; the local AI answers from the top alerts only</div>
+          <div style="display:flex;gap:8px;margin-top:14px"><label class="ctl" style="flex:1">${ICON.search}<input type="text" id="askIn" placeholder="e.g. Which users have the most off-hours alerts?"></label><button class="btn acc" id="askBtn" ${S.aiOnline ? "" : "disabled title='Start Ollama first'"}>Ask</button></div>
+          <div id="askOut" class="small" style="margin-top:12px;line-height:1.6">${S.aiOnline ? "" : '<span class="muted">Offline: run <code>python -m pipeline.ask "your question"</code> on the auditor\'s laptop, or start Ollama.</span>'}</div></div>
+      </div>
       <div class="grid g4">
         ${[["Generation", "Audit memos and the engagement summary", "doc"], ["Data enrichment", "Nature of each entry: accrual, reversal…", "layers"],
            ["Analysis", "Rules + SHAP turned into plain-language reasons", "brain"], ["Recommendation", "Follow-up audit procedures per alert", "target"]]
@@ -476,6 +502,16 @@
         ${D.prompts.library.map(p => `<details><summary><span>${esc(p.name)}</span><span class="badge ${p.role === "system" ? "acc" : ""}">${p.role} · ${esc(p.used_for)}</span></summary><pre>${esc(p.text)}</pre></details>`).join("")}
         <div class="lbl2" style="margin-top:18px">Change log</div><ul class="list small">${D.prompts.log.map(l => `<li>${esc(l)}</li>`).join("")}</ul></div>`;
     $("#langIn").value = S.language;
+    $("#askBtn").onclick = async e => {
+      const q = $("#askIn").value.trim(); if (!q) return;
+      const b = e.currentTarget; b.disabled = true; b.innerHTML = '<span class="spin"></span>';
+      try {
+        const table = alertsNow().slice(0, 60).map(a => `${a.id} | ${a.posting_date} | ${a.user} | ${a.source} | ${nf(a.amount)} EUR | score ${a.score} | ${a.rules.join("; ") || "models only"} | ${a.text}`).join("\n");
+        const res = await aiChat(lib("System").replace("{language}", S.language), fill(lib("Ask"), { question: q, table }));
+        $("#askOut").innerHTML = `<p>${esc(res.answer || JSON.stringify(res))}</p>${(res.entries || res.entry_ids || []).length ? `<div class="chips">${(res.entries || res.entry_ids).map(id => `<button class="tag gray li" data-id="${esc(id)}" style="cursor:pointer">${esc(id)}</button>`).join("")}</div>` : ""}<div class="tiny muted" style="margin-top:6px">${esc(S.model)} · answer from the alert table only · check before use</div>`;
+      } catch (err) { toast("Local AI error: " + err.message); }
+      b.disabled = !S.aiOnline; b.textContent = "Ask";
+    };
     $("#modelIn").onchange = e => { S.model = e.target.value.trim(); store.set("je-audit-model", S.model); };
     $("#langIn").onchange = e => { S.language = e.target.value; };
     $("#sumBtn").onclick = async e => {
@@ -484,7 +520,8 @@
         const al = alertsNow(), byRule = {}, byParam = {};
         al.forEach(a => a.rules.forEach(r => { byRule[r] = (byRule[r] || 0) + 1; byParam[paramOf(r)] = (byParam[paramOf(r)] || 0) + 1; }));
         const facts = { ledger: `${D.dataset.datacard.format}, ${D.dataset.datacard.period}`, n_entries: D.kpis.entries, n_manual: D.kpis.manual, cutoff: S.cutoff,
-          n_alerts: al.length, by_param: JSON.stringify(byParam), by_rule: JSON.stringify(byRule), n_injected: D.kpis.injected, found: D.kpis.found,
+          n_alerts: totalAlerts(), themes: JSON.stringify(D.themes), value_under_review: nf(D.kpis.value_under_review),
+          ground_truth: D.kpis.labelled ? `${D.kpis.found} of ${D.kpis.labelled} ${labelWord()} entries are alerted` : "no labels",
           forecast_flags: (D.forecast.months || []).filter(x => x.flag).map(x => x.month).join(", ") || "none",
           top5: al.slice(0, 5).map(a => `${a.id} ${a.text} ${nf(a.amount)} EUR score ${a.score}`).join("; ") };
         const res = await aiChat(lib("System").replace("{language}", S.language), fill(lib("Engagement"), facts));
@@ -496,28 +533,30 @@
   // ---------------------------------------------------------------- Method
   function renderMethod() {
     head("Method", "Project 2 · Testing 100% of journal entries · AI & Finance, Team 9");
-    const comb = D.metrics.models["Risk score (combined)"], kk = Object.keys(comb).find(x => x.startsWith("precision_at_"));
+    const comb = D.metrics.models["Risk score (combined)"] || {};
     $("#page-method").innerHTML = `
       <div class="grid g2">
         <div class="card" style="--i:0"><div class="card-t">Business objective</div>
           <p style="margin-top:10px;line-height:1.65">Help an external auditor test <b>every</b> journal entry instead of a sample. NEP 240 / ISA 240 require the auditor to test the appropriateness of journal entries and other adjustments made when preparing the financial statements.</p>
           <div class="list-r" style="margin-top:14px">
-            ${[["acc", "target", "M1 · Detect", "Rules + Isolation Forest", `Recall ${pct(comb.recall)}`],
-               ["p2", "layers", "M2 · Prioritise (predict)", "XGBoost + SHAP", kk ? `Top ${kk.split("_").pop()}: ${pct(comb[kk])}` : "n/a"],
-               ["good", "doc", "M3 · Document", "Local LLM memo per alert", "Auditor decides"]]
+            ${[["acc", "target", "M1 · Detect", "Rules + Isolation Forest / LOF / autoencoder", `Recall ${pct(comb.recall)}`],
+               ["p2", "layers", "M2 · Prioritise (predict)", "XGBoost + SHAP, Person 2's model", `PR-AUC ${comb.pr_auc ?? "n/a"}`],
+               ["good", "doc", "M3 · Document", "Person 3's library + local LLM memo per alert", "Auditor decides"]]
               .map(([c, i, t, s, r]) => `<div class="li"><span class="mark ${c}">${ICON[i]}</span><div><div class="lt">${t}</div><div class="ls">${s}</div></div><div class="lr">${r}</div></div>`).join("")}
           </div></div>
-        <div class="card" style="--i:1"><div class="card-t">Two parameters</div><div class="card-s">We kept the scope narrow on purpose</div>
-          <div class="inner" style="margin-top:14px"><span class="tag blue">P1 Timing</span><p class="small" style="margin-top:8px;line-height:1.6">Weekend or public-holiday posting, year-end closing window, revenue booked at year end, entered long after the posting date (backdating), entered at night or on a weekend. Holidays via the Nager.Date API (${esc(D.dataset.holiday_source)}).</p></div>
-          <div class="inner" style="margin-top:12px"><span class="tag purple">P2 Amount</span><p class="small" style="margin-top:8px;line-height:1.6">Round amounts, just below the approval threshold (€${nf(D.settings.approval_threshold)}), several near-threshold entries by one user on one day, above performance materiality (${Object.entries(D.settings.performance_materiality).map(([y, v]) => `${y}: €${nf(v)}`).join(" · ")}), unusual amount for the account.</p></div></div>
+        <div class="card" style="--i:1"><div class="card-t">Two parameters + context</div><div class="card-s">Timing and amount; context flags (rare account pairs, new accounts, unusual hour for the user, duplicates) support them</div>
+          <div class="inner" style="margin-top:14px"><span class="tag blue">P1 Timing</span><p class="small" style="margin-top:8px;line-height:1.6">Weekend or public-holiday posting, year-end closing window, revenue booked at year end, entered 10–29 days or 30+ days after the posting date, entered outside the ledger's working day or on a weekend. Holidays via the Nager.Date API (${esc(D.dataset.holiday_source)}).</p></div>
+          <div class="inner" style="margin-top:12px"><span class="tag purple">P2 Amount</span><p class="small" style="margin-top:8px;line-height:1.6">Round amounts, high cash disbursements, just below the approval threshold (€${nf(D.settings.approval_threshold)}), several near-threshold entries by one user on one day, above performance materiality (${Object.entries(D.settings.performance_materiality).map(([y, v]) => `${y}: €${nf(v)}`).join(" · ")}), unusual amount for the account.</p></div></div>
       </div>
       <div class="grid g2">
         <div class="card" style="--i:2"><div class="card-t">Pipeline</div><div class="card-s">The professor's analysis steps</div>
-          <ol class="list" style="margin-top:12px"><li>Collect: DIB general ledger + Nager.Date API</li><li>Datacard and consistency checks</li><li>EDA: Benford, weekday, hour, monthly</li><li>Inject labelled anomalies (the data is clean)</li><li>Features P1 + P2 per entry</li><li>Split: train first year, test later year + held-out types</li><li>Rules → Isolation Forest → XGBoost → combined score</li><li>Evaluate: precision, recall, F1, PR-AUC, circularity</li><li>Gen AI: nature, memos, summary (local)</li><li>Decide: the auditor reviews every alert</li></ol>
+          <ol class="list" style="margin-top:12px"><li>Collect: DIB general ledger (Person 1) + Nager.Date API; FEC and mapped CSV also read</li><li>Datacard and consistency checks; generator columns dropped</li><li>EDA: Benford, weekday, hour, monthly</li><li>Labels: the dataset's own (850) or injected demo anomalies</li><li>Features: P1 timing, P2 amount, context</li><li>Split: temporal (last 25% of the period) + held-out types</li><li>Rules → unsupervised → XGBoost → Person 2's model → combined score</li><li>Evaluate: precision, recall, F1, PR-AUC, circularity</li><li>Gen AI: nature, themes, memos from Person 3's library, summary (local)</li><li>Decide: the auditor reviews every alert</li></ol>
           <div class="note" style="margin-top:14px">Refresh the data:<pre>pip install -r requirements.txt
-python -m pipeline.run --country FR --inject 42 --llm-top 40</pre></div></div>
+python -m pipeline.run                       # original DIB file, own labels
+python -m pipeline.run --input my_FEC.txt    # a French FEC
+python -m pytest -q                          # tests</pre></div></div>
         <div class="card" style="--i:3"><div class="card-t">Limits &amp; governance</div><div class="card-s">What the reader must know</div>
-          <ul class="list" style="margin-top:12px"><li>Demo anomalies are injected: real fraud can look different.</li><li>Thresholds and materiality are our assumptions (adjustable).</li><li>The LLM can sound right and be wrong: it only receives computed facts, uses JSON output and temperature 0.2, and every memo must be reviewed.</li><li>Human accountability: the AI flags and explains; the auditor decides and signs.</li><li>Confidential client data stays local (Ollama); this website only shows results.</li><li>Decisions made here are saved in this browser only. Export them to Excel for the working papers.</li></ul>
+          <ul class="list" style="margin-top:12px"><li>The ledger and its labels are synthetic: real fraud can look different, and a score is not a probability of fraud.</li><li>Labels are a sample of entries matching each pattern, so precision has a ceiling; held-out types show what the ML cannot see.</li><li>Thresholds and materiality are our assumptions (adjustable).</li><li>The LLM can sound right and be wrong: it only receives computed facts, uses JSON output and temperature 0.2, and every memo must be reviewed.</li><li>Human accountability: the AI flags and explains; the auditor decides and signs.</li><li>Confidential client data stays local (Ollama); this website only shows results.</li><li>Decisions made here are saved in this browser only. Export them to Excel for the working papers.</li></ul>
           <div class="note" style="margin-top:14px">Data: ${esc(D.dataset.authors)}, <i>${esc(D.dataset.name)}</i>, Zenodo, DOI ${esc(D.dataset.doi)}, ${esc(D.dataset.license)}.</div></div>
       </div>`;
   }
@@ -532,9 +571,9 @@ python -m pipeline.run --country FR --inject 42 --llm-top 40</pre></div></div>
       <button class="icon-btn close" id="dClose" aria-label="Close">${ICON.x}</button>
       <div class="card-s">${esc(a.id)} · ${esc(a.source)} entry · ${esc(a.nature)}</div>
       <h2>${esc(a.text)}</h2>
-      <div class="chips" style="margin-top:12px"><span class="badge ${a.score >= 75 ? "bad" : a.score >= 50 ? "warn" : ""}">Risk ${nf(a.score)}/100</span>${decTag(d.decision)}${a.injected ? `<span class="badge warn">Demo anomaly · ${esc(TYPE_LABEL[a.injected] || a.injected)}</span>` : ""}</div>
+      <div class="chips" style="margin-top:12px"><span class="badge ${a.score >= 75 ? "bad" : a.score >= 50 ? "warn" : ""}">Risk ${nf(a.score)}/100</span>${decTag(d.decision)}${a.injected ? `<span class="badge warn">${labelWord() === "labelled" ? "Labelled" : "Demo"} anomaly · ${esc(typeName(a.injected))}</span>` : ""}<span class="badge">${esc(a.theme || "")}</span></div>
       <div class="sect kv">
-        ${[["Amount", eur(a.amount)], ["Posted", dmy(a.posting_date)], ["Entered", dmy(a.entered_at) + " " + a.entered_at.slice(11)], ["Delay", a.delay + " days"], ["User", esc(a.user)], ["Model scores", `Rules ${nf(a.rules_score)} · XGB ${pct(a.xgb)} · Outlier ${pct(a.iforest)}`]]
+        ${[["Amount", eur(a.amount)], ["Posted", dmy(a.posting_date)], ["Entered", dmy(a.entered_at) + " " + a.entered_at.slice(11)], ["Delay", a.delay + " days"], ["User", esc(a.user)], ["Model scores", `Rules ${nf(a.rules_score)} · XGB ${pct(a.xgb)} · Outlier ${pct(a.iforest)}${a.p2 !== null && a.p2 !== undefined ? ` · Person 2 ${nf(a.p2, 1)}` : ""}`]]
           .map(([l, v]) => `<div><div class="tiny muted">${l}</div><div class="v">${v}</div></div>`).join("")}
       </div>
       <div class="sect"><h4>Entry lines</h4><div class="card flush" style="animation:none"><table><thead><tr><th>Account</th><th>Name</th><th class="r">Debit</th><th class="r">Credit</th></tr></thead><tbody>
@@ -543,11 +582,12 @@ python -m pipeline.run --country FR --inject 42 --llm-top 40</pre></div></div>
       <div class="sect"><h4>Why the model flagged it · SHAP</h4>${a.shap.map(s => `<div class="shap-row"><span>${esc(s.feature)}</span><span class="track"><i style="width:${s.shap / maxShap * 100}%"></i></span><span class="muted r">+${s.shap}</span></div>`).join("") || '<span class="card-s">No positive SHAP driver</span>'}</div>
       <div class="sect memo"><div class="card-head" style="margin-bottom:10px"><h4 style="margin:0">Audit memo</h4><button class="btn acc" id="memoBtn" ${S.aiOnline ? "" : "disabled title='Start Ollama to rewrite'"}>${ICON.spark}Rewrite with local AI</button></div>
         <div class="card" style="animation:none">
-          <div class="chips"><span class="badge ${lvl}">${esc(m.risk_level)} risk</span><span class="badge acc">Assertion · ${esc(m.assertion_at_risk)}</span></div>
+          <div class="chips"><span class="badge ${lvl}">${esc(m.risk_level)} risk</span><span class="badge acc">Assertion · ${esc(m.assertion_at_risk)}</span>${(m.library_codes || []).map(c => `<span class="tag gray">Library ${esc(c)}</span>`).join("")}</div>
           <p style="margin-top:12px">${esc(m.why_suspicious)}</p>
+          <div class="lbl2" style="margin-top:16px">Evidence to obtain</div><ul class="small">${(m.evidence_to_obtain || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
           <div class="lbl2" style="margin-top:16px">Follow-up procedures</div><ul class="small">${(m.follow_up_procedures || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
           <div class="lbl2" style="margin-top:16px">Possible legitimate explanations</div><ul class="small">${(m.possible_explanations || []).map(x => `<li>${esc(x)}</li>`).join("")}</ul>
-          <p class="small" style="margin-top:14px"><b>Conclusion:</b> ${esc(m.conclusion)}</p>
+          <p class="small" style="margin-top:14px"><b>Conclusion:</b> ${esc(m.auditor_conclusion || m.conclusion || "")}</p>
           <div class="tiny muted" style="margin-top:10px">Generated by ${esc(m.source)}. Must be reviewed by the auditor.</div></div></div>
       <div class="sect"><h4>Auditor decision</h4>
         <div class="dec" id="seg"><button data-v="retained" class="r">Retained</button><button data-v="investigate" class="i">To investigate</button><button data-v="dismissed" class="d">Dismissed</button></div>
@@ -589,8 +629,9 @@ python -m pipeline.run --country FR --inject 42 --llm-top 40</pre></div></div>
       return { entry_id: a.id, risk_score: a.score, alert: isAlert(a) ? "yes" : "no", posting_date: a.posting_date, entered_at: a.entered_at, user: a.user,
         source: a.source, nature: a.nature, text: a.text, accounts: a.accounts, amount: a.amount, red_flags: a.rules.join("; "),
         shap_drivers: a.shap.map(s => `${s.feature} (+${s.shap})`).join("; "), risk_level: m.risk_level, why_suspicious: m.why_suspicious,
-        assertion: m.assertion_at_risk, follow_up: (m.follow_up_procedures || []).join(" | "), conclusion: m.conclusion, memo_source: m.source,
-        demo_anomaly: a.injected || "", auditor_decision: d.decision || "", auditor_comment: d.comment || "", decided_at: d.ts || "" };
+        assertion: m.assertion_at_risk, evidence: (m.evidence_to_obtain || []).join(" | "), follow_up: (m.follow_up_procedures || []).join(" | "),
+        library_codes: (m.library_codes || []).join(", "), conclusion: m.auditor_conclusion || m.conclusion || "", memo_source: m.source, theme: a.theme,
+        person2_score: a.p2 ?? "", labelled_anomaly: a.injected || "", auditor_decision: d.decision || "", auditor_comment: d.comment || "", decided_at: d.ts || "" };
     });
     const name = `JE_audit_alerts_${new Date().toISOString().slice(0, 10)}`;
     if (kind === "xlsx" && window.XLSX) {
@@ -631,7 +672,7 @@ python -m pipeline.run --country FR --inject 42 --llm-top 40</pre></div></div>
     const page = RENDER[id] ? id : "dashboard";
     document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === "page-" + page));
     document.querySelectorAll("[data-nav]").forEach(n => n.classList.toggle("on", n.dataset.nav === page));
-    document.title = `${PAGES.find(p => p[0] === page)[1]} · JE Audit`;
+    document.title = `${PAGES.find(p => p[0] === page)[1]} · JournalGuard AI`;
     $("#app").classList.remove("menu");
     RENDER[page]();
     if (keepScroll !== true) window.scrollTo({ top: 0 });

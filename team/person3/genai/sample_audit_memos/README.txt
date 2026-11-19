@@ -1,0 +1,1 @@
+Sample memo output is generated from a real scored row at runtime. Do not invent a sample transaction. Use the test command in the Person 3 guide to generate sample_audit_memos/sample_memo.txt from your own demo ledger.

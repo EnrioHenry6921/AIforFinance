@@ -1,0 +1,70 @@
+{
+  "dataset": "DIB General Ledger — uploaded journal_entries_4203.csv",
+  "entry_count": 102429,
+  "posting_line_count": 256232,
+  "original_anomalous_entries": 850,
+  "original_anomaly_rate": 0.00829843110837751,
+  "temporal_train_cutoff": "2024-07-08",
+  "train_entries": 77037,
+  "test_entries": 25392,
+  "test_original_anomalies": 202,
+  "xgboost_threshold_0_5": {
+    "precision": 0.37030075187969924,
+    "recall": 0.9752475247524752,
+    "f1_score": 0.5367847411444142,
+    "average_precision": 0.7318279516951269,
+    "confusion_matrix_tn_fp_fn_tp": [
+      24855,
+      335,
+      5,
+      197
+    ],
+    "predicted_anomalies": 532
+  },
+  "isolation_forest_threshold": {
+    "contamination": 0.01,
+    "precision": 0.0859375,
+    "recall": 0.10891089108910891,
+    "f1_score": 0.09606986899563319,
+    "average_precision": 0.05406997585599821,
+    "confusion_matrix_tn_fp_fn_tp": [
+      24956,
+      234,
+      180,
+      22
+    ],
+    "predicted_anomalies": 256
+  },
+  "data_quality": {
+    "unique_posting_ids": 102429,
+    "missing_cells": 0,
+    "duplicate_rows": 0,
+    "unbalanced_entries_over_0_01": 0,
+    "entry_lines_min": 2,
+    "entry_lines_max": 4
+  },
+  "feature_columns": [
+    "log_entry_amount",
+    "posting_line_count",
+    "account_count",
+    "posting_weekday",
+    "posting_month",
+    "posting_day",
+    "posting_hour",
+    "doc_to_post_days",
+    "post_to_enter_days",
+    "user_entry_count",
+    "account_signature",
+    "user"
+  ],
+  "excluded_from_model": [
+    "label",
+    "marking",
+    "weekend",
+    "nwh",
+    "promptly",
+    "top_n",
+    "high_cash"
+  ],
+  "important_caveat": "Les labels correspondent aux anomalies du dataset simulé. Les scores évaluent la similarité avec ces labels, pas une probabilité de fraude réelle."
+}

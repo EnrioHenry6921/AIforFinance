@@ -7,3 +7,6 @@ __pycache__/
 .venv/
 .DS_Store
 .vercel
+data/inbox/
+data/external/
+.pytest_cache/

@@ -320,3 +320,6 @@ pre { white-space: pre-wrap; font-family: var(--mono); font-size: 12px; line-hei
   .filters { padding: 0 16px 14px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; } }
+/* long subtitles (file paths) and header buttons must wrap on phones */
+.page-h .sub { overflow-wrap: anywhere; }
+@media (max-width: 640px) { .page-h { flex-wrap: wrap; } #headActions { width: 100%; } }

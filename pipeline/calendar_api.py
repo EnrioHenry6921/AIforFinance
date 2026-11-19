@@ -10,7 +10,7 @@ import requests
 from . import config
 
 
-def public_holidays(years, country=config.HOLIDAY_COUNTRY):
+def public_holidays(years, country="FR"):
     """Return ({date: holiday name}, source) for the given years."""
     cache = config.OUT_DIR / f"holidays_{country}.json"
     data = json.loads(cache.read_text()) if cache.exists() else {}
