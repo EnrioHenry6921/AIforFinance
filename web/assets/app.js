@@ -236,7 +236,7 @@
       <div class="grid g4">
         ${stat("Entries tested", nf(k.entries), `100% of the ledger · ${nf(k.manual)} manual`, "doc", true, 2)}
         ${stat("Alerts to review", nf(totalAlerts()), `<span class="badge warn">${pct(totalAlerts() / k.entries, 2)}</span> of all entries · ${nf(k.high)} high`, "alert", false, 3)}
-        ${stat(demo ? "Unlabelled entries flagged" : "Entries flagged", nf(k.real_alerts), demo ? "not in the labels, worth a look" : "worth a look", "target", false, 4)}
+        ${stat(demo ? "Unlabelled entries flagged" : "Entries flagged", nf(S.cutoff === D.settings.alert_cutoff ? k.real_alerts : alerts.filter(a => !a.injected).length), demo ? "not in the labels, worth a look" : "worth a look", "target", false, 4)}
         ${stat("Amount tested", eurShort(k.amount_tested), `${D.charts.monthly.length} months · ${D.dataset.datacard.users} users`, "wallet", false, 5)}
       </div>
 
